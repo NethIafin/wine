@@ -3680,6 +3680,21 @@ static void set_large_address_space(void)
     user_space_limit = working_set_limit = address_space_limit;
 }
 
+/***********************************************************************
+ *           set_stack_mapping
+ * OpenBSD will kill any process that has a stack pointer outside a
+ * MAP_STACK mapping whenever we have a syscall or page fault.
+ * This means that every stack we hand out must have that flag
+ */
+static void set_stack_mapping( void *start, size_t size)
+{
+#ifdef __OpenBSD__
+    if (mmap( start, size, PROT_READ | PROT_WRITE,
+        MAP_FIXED | MAP_PRIVATE | MAP_ANON | MAP_STACK, -1, 0 ) != start)
+        ERR( "failed to map stack %p-%p: %s\n", start, (char *)start + size, strerror(errno) );
+#endif
+}
+
 
 /***********************************************************************
  *           virtual_alloc_first_thread_data
@@ -3701,6 +3716,7 @@ struct thread_data *virtual_alloc_first_thread_data(void)
     status = map_view( &view, NULL, signal_stack_mask + 1 + kernel_stack_size, MEM_TOP_DOWN,
                        VPROT_READ | VPROT_WRITE | VPROT_COMMITTED, 4 * limit_4g, 0, 0 );
     assert( !status );
+    set_stack_mapping( view->base, view->size );
     thread_data = init_thread_data( view->base );
     pthread_setspecific( thread_data_key, thread_data );
     return thread_data;
@@ -3819,6 +3835,7 @@ struct thread_data *virtual_alloc_thread_data(void)
     status = map_view( &view, NULL, size, 0, VPROT_READ | VPROT_WRITE | VPROT_COMMITTED, limit_4g, 0, 0 );
     if (!status)
     {
+        set_stack_mapping( view->base, view->size );
         data = init_thread_data( view->base );
         VIRTUAL_DEBUG_DUMP_VIEW( view );
     }
@@ -4083,6 +4100,7 @@ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, UL
     status = map_view( &view, NULL, size, 0, VPROT_READ | VPROT_WRITE | VPROT_COMMITTED,
                        limit_low, limit_high, 0 );
     if (status != STATUS_SUCCESS) goto done;
+    set_stack_mapping( view->base, view->size );
 
 #ifdef VALGRIND_STACK_REGISTER
     VALGRIND_STACK_REGISTER( view->base, (char *)view->base + view->size );
