@@ -82,6 +82,7 @@ extern void _thread_set_tsd_base(uint64_t);
 #include "wine/list.h"
 #include "wine/asm.h"
 #include "unix_private.h"
+#include "gs_openbsd.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(unwind);
@@ -2843,6 +2844,9 @@ void signal_init_process( TEB *teb )
     WOW_TEB *wow_teb = get_wow_teb( teb );
     void *ptr;
 
+#ifdef __OpenBSD__
+    gs_init_process();
+#endif
     if (user_shared_data->XState.Size) xstate_size = user_shared_data->XState.Size - sizeof(XSAVE_FORMAT);
     frame_size = offsetof( struct syscall_frame, xstate ) + xstate_size;
     xstate_extended_features = user_shared_data->XState.EnabledFeatures & ~(UINT64)3;
@@ -2950,6 +2954,8 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
     amd64_get_fsbase( &thread_data->pthread_teb );
 #elif defined(__NetBSD__)
     sysarch( X86_64_SET_GSBASE, &teb );
+#elif defined(__OpenBSD__)
+    gs_set_thread_teb( teb );
 #elif defined (__APPLE__)
     thread_data->pthread_teb = mac_thread_gsbase();
 #elif defined(__OpenBSD__)
@@ -3062,7 +3068,12 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
  */
 __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_gs_load") ":\n\t"
+#ifdef __OpenBSD__
+                   LOAD_TEB("%rcx")
+                   "movq 0x378(%rcx),%rcx\n\t"     /* thread_data->syscall_frame OpenBSD case */
+#else
                    "movq %gs:0x378,%rcx\n\t"       /* thread_data->syscall_frame */
+#endif
                    "popq 0x70(%rcx)\n\t"           /* frame->rip */
                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
                    __ASM_CFI_REG_IS_AT2(rip, rcx, 0xf0,0x00)
@@ -3093,7 +3104,11 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "movw %ss,0x90(%rcx)\n\t"
                    "movq %rbp,0x98(%rcx)\n\t"
                    __ASM_CFI_REG_IS_AT2(rbp, rcx, 0x98, 0x01)
+#ifdef __OpenBSD__
+                   LOAD_TEB("%r13")                /* teb */
+#else
                    "movq %gs:0x30,%r13\n\t"        /* teb */
+#endif
                    "movl %eax,0xb0(%rcx)\n\t"      /* frame->syscall_id */
                    /* Legends of Runeterra hooks the first system call return instruction, and
                     * depends on us returning to it. Adjust the return address accordingly. */
@@ -3341,7 +3356,12 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "popfq\n\t"
                    "iretq\n"
                    /* RESTORE_FLAGS_INSTRUMENTATION */
+#ifdef __OpenBSD__
+                   "2:\t" LOAD_TEB("%r10")
+                   "movq 0x330(%r10),%r10\n\t" /* amd64_thread_data()->instrumentation_callback */
+#else
                    "2:\tmovq %gs:0x330,%r10\n\t"  /* amd64_thread_data()->instrumentation_callback */
+#endif
                    "movq (%r10),%r10\n\t"
                    "test %r10,%r10\n\t"
                    "jz 3b\n\t"
@@ -3400,7 +3420,12 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_return,
                    "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
 
 __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_instrumentation,
+#ifdef __OpenBSD__
+                   LOAD_TEB("%rcx")
+                   "movq 0x378(%rcx), %rcx\n\t"    /* thread_data->syscall_frame */
+#else
                    "movq %gs:0x378,%rcx\n\t"       /* thread_data->syscall_frame */
+#endif
                    "popq 0x70(%rcx)\n\t"           /* frame->rip */
                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
                    __ASM_CFI_REG_IS_AT2(rip, rcx, 0xf0,0x00)
@@ -3418,7 +3443,12 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_instrumentation,
 __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "movq %rcx,%r10\n\t"
                    __ASM_LOCAL_LABEL("__wine_unix_call_dispatcher_gs_load") ":\n\t"
+#ifdef __OpenBSD__
+                   LOAD_TEB("%rcx")
+                   "movq 0x378(%rcx), %rcx\n\t"    /* thread_data->syscall_frame */
+#else
                    "movq %gs:0x378,%rcx\n\t"       /* thread_data->syscall_frame */
+#endif
                    "popq 0x70(%rcx)\n\t"           /* frame->rip */
                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
                    __ASM_CFI_REG_IS_AT2(rip, rcx, 0xf0,0x00)
@@ -3442,7 +3472,11 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    __ASM_CFI_CFA_IS_AT2(rcx, 0x88, 0x01)
                    "movq %rbp,0x98(%rcx)\n\t"
                    __ASM_CFI_REG_IS_AT2(rbp, rcx, 0x98, 0x01)
+#ifdef __OpenBSD__
+                   LOAD_TEB("%r13")
+#else
                    "movq %gs:0x30,%r13\n\t"
+#endif
                    "stmxcsr 0xd8(%rcx)\n\t"        /* frame->xsave.MxCsr */
                    "movdqa %xmm6,0x1c0(%rcx)\n\t"
                    "movdqa %xmm7,0x1d0(%rcx)\n\t"
