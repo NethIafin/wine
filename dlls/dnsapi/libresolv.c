@@ -43,6 +43,9 @@
 #ifdef HAVE_NETDB_H
 # include <netdb.h>
 #endif
+#ifdef __OpenBSD__
+#define ns_c_in C_IN
+#endif
 
 #include "ntstatus.h"
 #include "windef.h"

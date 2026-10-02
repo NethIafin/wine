@@ -610,6 +610,9 @@ Please install mingw-w64, clang/llvm-dlltool/lld, or llvm-mingw.])
     WINE_TRY_PE_CFLAGS([-ffunction-sections])
     WINE_TRY_PE_CFLAGS([-ffp-exception-behavior=maytrap])
 
+    dnl OpenBSD's clang adds return protection, and Wine's own modules will fail on startup if return protection is added
+    WINE_TRY_PE_CFLAGS([-fno-ret-protector])
+
     dnl clang had broken -fms-hotpatch support before version 18 (https://github.com/llvm/llvm-project/pull/77245)
     WINE_TRY_PE_CFLAGS([-fms-hotpatch -DMIN_CLANG_VERSION=18],
                        [AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" -fms-hotpatch"])
@@ -1091,6 +1094,12 @@ case $host_os in
             ])
             ;;
         esac
+        ;;
+      openbsd*)
+        AS_VAR_APPEND([WINELOADER_LDFLAGS],[" -pie"])
+        dnl We can only support x64 arch for OpenBSD
+        dnl W^X: Windows code will almost definitely need W|X so we need to set wxneeded
+        WINE_TRY_CFLAGS([-Wl,-z,wxneeded],[AS_VAR_APPEND([WINELOADER_LDFLAGS],[" -Wl,-z,wxneeded"])])
         ;;
       *)
         case $HOST_ARCH in
@@ -1901,6 +1910,10 @@ then
 fi
 WINE_NOTICE_WITH(netapi,[test "x$ac_cv_lib_soname_netapi" = "x"],
                  [libnetapi not found, Samba NetAPI won't be supported.])
+
+dnl **** Check for _Unwind_Find_FDE (in libc++abi on OpenBSD) ****
+AC_CHECK_FUNC(_Unwind_Find_FDE,,
+            [AC_CHECK_LIB(c++abi,_Unwind_Find_FDE,[AC_SUBST(UNWIND_LIBS,"-lc++abi")],,[$PTHREAD_LIBS])])
 
 
 dnl **** Check for any sound system ****
