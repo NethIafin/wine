@@ -54,6 +54,7 @@ SOURCES = \
 	unix/debug.c \
 	unix/env.c \
 	unix/file.c \
+	unix/gs_openbsd.c \
 	unix/loader.c \
 	unix/loadorder.c \
 	unix/process.c \
