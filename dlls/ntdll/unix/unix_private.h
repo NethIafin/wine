@@ -346,6 +346,21 @@ extern void *get_builtin_so_handle( void *module );
 extern NTSTATUS set_builtin_unixlib_name( void *module, const char *name );
 extern BOOL is_emulated_code( ULONG_PTR ptr );
 
+#ifdef __OpenBSD__
+/* code patching for OpenBSD cases */
+enum patch_result
+{
+    PATCH_DONE,         /* the code has now new bytes */
+    PATCH_CHANGED,      /* the code wasn't the expected old byte, another thread already updated it */
+    PATCH_FAILED        /* this code cannot be patched */
+};
+#define CODE_STUB_SLOT_SIZE 128 /* bytes per stub we generate for %gs patching, has to be power of 2 */
+extern enum patch_result virtual_patch_code( void *addr, const void *old_bytes, const void *new_bytes, SIZE_T size );
+extern void *virtual_alloc_code_stub( const void *near, const void *stub, SIZE_T size );
+extern void virtual_free_code_stub( void *slot );
+extern void *virtual_code_stub_slot( const void *addr );
+#endif
+
 extern NTSTATUS get_thread_ldt_entry( HANDLE handle, THREAD_DESCRIPTOR_INFORMATION *info, ULONG len );
 extern void *get_native_context( CONTEXT *context );
 extern void *get_wow_context( CONTEXT *context );
