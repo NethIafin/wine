@@ -275,6 +275,7 @@ static const struct { const char *name; UINT cp; } charset_names[] =
     { "SHIFTJIS", 932 },
     { "SJIS", 932 },
     { "TIS620", 28601 },
+    { "USASCII", 20127 },
     { "UTF8", CP_UTF8 }
 };
 
