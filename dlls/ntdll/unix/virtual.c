@@ -4733,6 +4733,286 @@ static NTSTATUS grow_thread_stack( struct thread_data *data, char *page, struct 
     return ret;
 }
 
+#ifdef __OpenBSD__
+/* Code patching tooling to handle %gs patches and general OpenBSD-isms */
+
+/* We want to block pages on execution while we are writing stubs to them
+ * These tools are required to flip code pages we are about to write our stubs to
+ */
+#define FLIPPED_CODE_PAGES 16 /* A patch touches at most two pages, so 16 should be plenty even if we have multiple in work */
+#define FLIPPED_CODE_PAGE_RETRIES 64 /* How many times process will try to execute same code that is being actively stubbed */
+
+static struct
+{
+    char                *page;      /* page that we made RW (~E) for a moment */
+    unsigned int        retries;    /* how many times someone retried on it already */
+} flipped_code_pages[FLIPPED_CODE_PAGES];
+static unsigned int flipped_code_pos; /* Ring. Next position is to be allocated */
+
+/***********************************************************************
+ *           is_flipped_code_page
+ * Has this page reached retry limit.
+ * Do we even need to retry it (not a page we are actively flipping so error came from somewhere else)
+ * virtual_mutex must be held by caller.
+ */
+static BOOL is_flipped_code_page( const char *page )
+{
+    unsigned int i;
+
+    for (i = 0; i< FLIPPED_CODE_PAGES; i++)
+    {
+        if (flipped_code_pages[i].page != page) continue;
+        if (flipped_code_pages[i].retries >= FLIPPED_CODE_PAGE_RETRIES) return FALSE; /* retried too many times */
+        flipped_code_pages[i].retries++;
+        return TRUE; /* still has retry chances */
+    }
+    return FALSE; /* not a flipped page, so it is a different issue */
+}
+
+/***********************************************************************
+ *           make_code_page_writable
+ * Lock code page from being executable. It should be ready to write to
+ * virtual_mutex must be held by caller.
+ */
+static BOOL make_code_page_writable( char *page, SIZE_T range )
+{
+    return !mprotect( page, range, PROT_READ | PROT_WRITE );
+}
+
+/***********************************************************************
+ *           restore_code_page_protection
+ * give code page back its old protection and remember them
+ * virtual_mutex must be held by caller.
+ */
+static void restore_code_page_protection( char *page, SIZE_T range )
+{
+    SIZE_T i;
+
+    for (i = 0; i < range; i+= host_page_size)
+    {
+        flipped_code_pages[flipped_code_pos].page = page + i;
+        flipped_code_pages[flipped_code_pos].retries = 0;
+        flipped_code_pos = (flipped_code_pos + 1) % FLIPPED_CODE_PAGES;
+    }
+    mprotect_range( page, range, 0, 0 ); /* re-applies the protection in vprot */
+}
+
+/* Exported methods that are used in %gs mapping */
+
+/***********************************************************************
+ *           virtual_is_readable_page
+ * Whether the page is mapped readable - used in signal handlers to classify faults
+ */
+BOOL virtual_is_readable_page( const void *addr )
+{
+    return !!(get_unix_prot( get_host_page_vprot( addr ) ) & PROT_READ);
+}
+
+/***********************************************************************
+ *           virtual_patch_code
+ * Replace bytes of code at addr to new_bytes.
+ * Returns PATCH_DONE if patch is successful
+ * Returns PATCH_CHANGED if bytes at addr were not equal to old_bytes
+ *      means some other process changed them
+ * Returns PATCH_FAILED if this code can't be patched
+ */
+enum patch_result virtual_patch_code( void *addr, const void *old_bytes, const void *new_bytes, SIZE_T size)
+{
+    struct file_view *view;
+    sigset_t sigset;
+    SIZE_T i;
+
+    char *page = ROUND_ADDR( addr, host_page_mask );
+    SIZE_T range = ROUND_SIZE( addr, size, host_page_mask );
+    enum patch_result ret = PATCH_FAILED;
+
+    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+    /* not managed by wine - shouldn't be touched */
+    if (!(view = find_view( addr, size )))
+        goto done;
+    /* not a system view */
+    if (view->protect & VPROT_SYSTEM)
+        goto done;
+    /* should be anonymous memory or PE image */
+    if ((view->protect & SEC_FILE) && !(view->protect & SEC_IMAGE))
+        goto done;
+
+    /* should be a plain RX code, a RWX (JIT for example) would lose PROT_WRITE, anything else is not code */
+    for (i = 0; i < range; i += host_page_size)
+    {
+        BYTE vprot = get_host_page_vprot( page + i );
+        int uprot = get_unix_prot( vprot );
+        if(uprot & (PROT_READ | PROT_WRITE | PROT_EXEC) != (PROT_READ | PROT_EXEC))
+            goto done;
+    }
+
+    /* check if another thread was faster */
+    if (memcmp( addr, old_bytes, size )) ret = PATCH_CHANGED;
+    else if (make_code_page_writable( page, range ))
+    {
+        memcpy( addr, new_bytes, size );
+        restore_code_page_protection( page, range );
+        ret = PATCH_DONE;
+    }
+done:
+    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+    return ret;
+}
+
+/***********************************************************************
+ * Code Stub creation/handling.
+ * This logic is used purely by %gs handler
+ *
+ * They live in blocks of RX memory, cut into fixed size slots
+ *
+ * block (64 KiB, RX)
+ * | slot 0 | slot 1 | slot 2 | ... | free | ... | slot 512 |
+ *
+ * Fixes slot size make it cheap to go from any address inside of a stub back to its start
+ * Patched instruction reaches its stub with a jump rel32 which has range of +-2GiB.
+ */
+
+#define CODE_STUB_BLOCK_SIZE    0x10000     /* 64 KiB, 512 slots */
+#define CODE_STUB_REACH         0x7ff00000  /* rel32 reach (0x80000000) minus 1MiB margin */
+#define CODE_STUB_MAX_BLOCKS    256         /* 16MiB of stubs. Usually games/apps will take about 2-3k slots on a bad day. With this we have more than enough. */
+#define INT3_TRAPCODE           0xcc        /* int3 that helps us catch stray jumps */
+
+static struct
+{
+    char *base; /* start of the stub block */
+    char *pos;  /* next free slot, everything below is used. */
+} code_stub_blocks[CODE_STUB_MAX_BLOCKS];
+static unsigned int code_stub_block_count;
+
+static BOOL is_within_reach( const char *a, const char *b )
+{
+    return (a > b ? a - b : b - a) < CODE_STUB_REACH;
+}
+
+/***********************************************************************
+ *           virtual_alloc_code_stub
+ * Copy a stub of size at most CODE_STUB_SLOT_SIZE into a free slot within rel32 reach of near.
+ * Returns the slot or NULL.
+ */
+void *virtual_alloc_code_stub( const void *near, const void *stub, SIZE_T size )
+{
+    char *page;
+    unsigned int b, count;
+    struct file_view *view;
+    SIZE_T range;
+    sigset_t sigset;
+    char *retslot = NULL;
+
+    if (size > CODE_STUB_SLOT_SIZE)
+    {
+        WARN( "tried to create code stub of unsupported size %d\n", size);
+        return NULL;
+    }
+
+    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+    count = code_stub_block_count;
+
+    /* first try to find a block within reach */
+    for ( b = 0; b < count; b++)
+    {
+        char *base = code_stub_blocks[b].base;
+        /* full stub block? */
+        if (code_stub_blocks[b].pos >= base + CODE_STUB_BLOCK_SIZE)
+            continue;
+        /* start within reach? */
+        if (!is_within_reach( base, near ))
+            continue;
+        /* end within reach? */
+        if (!is_within_reach( base + CODE_STUB_BLOCK_SIZE, near))
+            continue;
+        /* found it! */
+        break;
+    }
+
+    if (b == count) /* not found it */
+    {
+        /* make new block within reach of near */
+        ULONG_PTR low = (ULONG_PTR)near > CODE_STUB_REACH ? (ULONG_PTR)near - CODE_STUB_REACH + CODE_STUB_BLOCK_SIZE : 0;
+        ULONG_PTR high = (ULONG_PTR)near + CODE_STUB_REACH - CODE_STUB_BLOCK_SIZE;
+
+        if ( b == CODE_STUB_MAX_BLOCKS )
+        {
+            WARN( "all code stubs exhausted, max stub count %d\n", CODE_STUB_MAX_BLOCKS);
+            goto done; /* out of stub slots, shouldn't happen */
+        }
+        if (map_view( &view, NULL, CODE_STUB_BLOCK_SIZE, 0, VPROT_READ | VPROT_WRITE | VPROT_COMMITTED,
+            low, high, 0 ))
+        {
+            WARN( "no space for code stub near %p\n", near );
+            goto done; /* everything around here is tightly packed */
+        }
+        memset( view->base, INT3_TRAPCODE, CODE_STUB_BLOCK_SIZE ); /* fill everything with INT3 to trap any stray jumps into our codeblock */
+        if (!set_vprot( view, view->base, CODE_STUB_BLOCK_SIZE, VPROT_READ | VPROT_EXEC | VPROT_COMMITTED ))
+        {
+            delete_view( view );
+            goto done;
+        }
+        code_stub_blocks[b].base = code_stub_blocks[b].pos = view->base;
+        /* now that it is defined and set and ready we finally can publish it */
+        __atomic_store_n( &code_stub_block_count, count+1, __ATOMIC_RELEASE );
+        TRACE( "new code stub block %p added for %p\n", view->base, near );
+    }
+
+    /* other threads may be running earlier stubs in these pages, we need to flip them */
+    page = ROUND_ADDR( code_stub_blocks[b].pos, host_page_mask );
+    range = ROUND_SIZE( code_stub_blocks[b].pos, CODE_STUB_SLOT_SIZE, host_page_mask );
+    if (!make_code_page_writable( page, range )) goto done;
+    retslot = code_stub_blocks[b].pos;
+    memset( retslot, INT3_TRAPCODE, CODE_STUB_SLOT_SIZE ); /* if slot contained a previous stub, and in general to catch any stray jumps */
+    memcpy( retslot, stub, size );
+    code_stub_blocks[b].pos += CODE_STUB_SLOT_SIZE;
+    restore_code_page_protection( page, range );
+done:
+    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+    return retslot;
+}
+
+/***********************************************************************
+ *           virtual_free_code_stub
+ * Gives back a slot that was just allocated. This is used if two threads decided to create same stub and one of them won.
+ * Only last one can be given back.
+ */
+void virtual_free_code_stub( void *slot )
+{
+    unsigned int b;
+    sigset_t sigset;
+    unsigned int count = __atomic_load_n( &code_stub_block_count, __ATOMIC_ACQUIRE );
+
+    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+    for (b = 0; b < count; b++)
+        if (code_stub_blocks[b].pos == (char *)slot + CODE_STUB_SLOT_SIZE)
+            code_stub_blocks[b].pos = slot;
+    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+}
+
+/***********************************************************************
+ *           virtual_code_stub_slot
+ * Returns the slot that contains addr. If it isn't in any stub - returns NULL
+ * No lock needed.
+ * Called from signal handlers for every fault.
+ */
+void *virtual_code_stub_slot( const void *addr )
+{
+    unsigned int b;
+    unsigned int count = __atomic_load_n( &code_stub_block_count, __ATOMIC_ACQUIRE );
+
+    for (b = 0; b < count; b++)
+    {
+        char *base = code_stub_blocks[b].base;
+        const char *caddr = (const char*)addr;
+        if (caddr >= base && caddr < base + CODE_STUB_BLOCK_SIZE)
+            return base + ((caddr - base) & ~(CODE_STUB_SLOT_SIZE - 1));
+    }
+    return NULL;
+}
+
+#endif /* __OpenBSD__ */
+
 
 /***********************************************************************
  *           virtual_handle_fault
@@ -4791,6 +5071,14 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
                 ret = STATUS_SUCCESS;
         }
     }
+#ifdef __OpenBSD
+    /* code stub page that we just locked? retry */
+    else if (err == EXCEPTION_EXECUTE_FAULT)
+    {
+        if ((get_unix_prot( vprot ) & PROT_EXEC) && is_flipped_code_page( page ))
+            ret = STATUS_SUCCESS;
+    }
+#endif
     mutex_unlock( &virtual_mutex );
     rec->ExceptionCode = ret;
     return ret;
