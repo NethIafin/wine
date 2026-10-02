@@ -266,6 +266,44 @@ __ASM_GLOBAL_FUNC( modify_ldt,
 #define FPU_sig(context)    ((void *)((context)->uc_mcontext.__fpregs))
 #define XState_sig(context) NULL
 
+#elif defined(__OpenBSD__)
+
+#include <machine/trap.h>
+
+/* OpenBSD names T_MCHK and T_XMMFLT differently */
+#define T_MCHK      T_MCA
+#define T_XMMFLT    T_XMM
+
+/* Pretty much same as FreeBSD but context has registers directly there */
+#define RAX_sig(context)     ((context)->sc_rax)
+#define RBX_sig(context)     ((context)->sc_rbx)
+#define RCX_sig(context)     ((context)->sc_rcx)
+#define RDX_sig(context)     ((context)->sc_rdx)
+#define RSI_sig(context)     ((context)->sc_rsi)
+#define RDI_sig(context)     ((context)->sc_rdi)
+#define RBP_sig(context)     ((context)->sc_rbp)
+#define R8_sig(context)      ((context)->sc_r8)
+#define R9_sig(context)      ((context)->sc_r9)
+#define R10_sig(context)     ((context)->sc_r10)
+#define R11_sig(context)     ((context)->sc_r11)
+#define R12_sig(context)     ((context)->sc_r12)
+#define R13_sig(context)     ((context)->sc_r13)
+#define R14_sig(context)     ((context)->sc_r14)
+#define R15_sig(context)     ((context)->sc_r15)
+#define CS_sig(context)      ((context)->sc_cs)
+#define DS_sig(context)      ((context)->sc_ds)
+#define ES_sig(context)      ((context)->sc_es)
+#define FS_sig(context)      ((context)->sc_fs)
+#define GS_sig(context)      ((context)->sc_gs)
+#define SS_sig(context)      ((context)->sc_ss)
+#define EFL_sig(context)     ((context)->sc_rflags)
+#define RIP_sig(context)     ((context)->sc_rip)
+#define RSP_sig(context)     ((context)->sc_rsp)
+#define TRAP_sig(context)    ((context)->sc_trapno)
+#define ERROR_sig(context)   ((context)->sc_err)
+#define FPU_sig(context)     ((void *)((context)->sc_fpstate))
+#define XState_sig(context)  NULL
+
 #elif defined (__APPLE__)
 
 #include <i386/user_ldt.h>
@@ -2914,6 +2952,8 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
     sysarch( X86_64_SET_GSBASE, &teb );
 #elif defined (__APPLE__)
     thread_data->pthread_teb = mac_thread_gsbase();
+#elif defined(__OpenBSD__)
+/*  OpenBSD %gs handler to be defined */
 #else
 # error Please define setting %gs for your architecture
 #endif
