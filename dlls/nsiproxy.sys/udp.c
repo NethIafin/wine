@@ -53,6 +53,10 @@
 #include <netinet/ip_var.h>
 #endif
 
+#ifdef HAVE_NET_ROUTE_H
+#include <net/route.h>
+#endif
+
 #ifdef HAVE_NETINET_IN_PCB_H
 #include <netinet/in_pcb.h>
 #endif
