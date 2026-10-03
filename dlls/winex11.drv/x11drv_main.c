@@ -67,7 +67,11 @@ Window root_window;
 BOOL usexvidmode = TRUE;
 BOOL usexrandr = TRUE;
 BOOL usexcomposite = TRUE;
+#ifdef __OpenBSD__
+BOOL use_egl = FALSE; /* OpenBSD's privelege separated X server can't attach thru SysV shm. Enable it if you can using UseEGL=Y */
+#else
 BOOL use_egl = TRUE;
+#endif
 BOOL use_take_focus = TRUE;
 BOOL use_primary_selection = FALSE;
 BOOL use_system_cursors = TRUE;
