@@ -36,6 +36,8 @@ extern long teb_tls_offset;
 extern void gs_init_process(void);
 /* store the TEB pointer */
 extern void gs_set_thread_teb( TEB *teb );
+/* handle gs page fault */
+extern BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr );
 
 
 #endif /* #if defined(__OpenBSD__) */

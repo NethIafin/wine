@@ -5071,7 +5071,7 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
                 ret = STATUS_SUCCESS;
         }
     }
-#ifdef __OpenBSD
+#ifdef __OpenBSD__
     /* code stub page that we just locked? retry */
     else if (err == EXCEPTION_EXECUTE_FAULT)
     {
