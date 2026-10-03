@@ -111,9 +111,6 @@ enum { GS_RAX, GS_RCX, GS_RDX, GS_RBX, GS_RSP, GS_RBP, GS_RSI, GS_RDI };
 
 /* Opcode defines, so instead of magic constants we have some understanding what's being added */
 #define OPCODE_ESCAPE       0x0f    /* first byte of two-byte opcode kept as 0x100 | second byte */
-#define JMP_REL32           0xe9    /* used to replace the command and then jump back from the stub */
-#define JMP_REL32_LEN       5       /* length of JMP_REL32 - e9 and 32 bits of rel jump offset */
-#define INT3                0xcc    /* we are using int3 to pad our codestubs and source of our jumps to trap any stray jumps */
 #define MAX_INSN_LEN        15      /* longest possible x86-64 instruction */
 #define IMM_Z               0xff
 
@@ -467,5 +464,332 @@ static BOOL decode_gs_insn( struct gs_insn *insn, const BYTE *bytes, unsigned in
     return TRUE;
 }
 
+/***********************************************************************
+ *                      %GS FAULT HANDLING BLOCK
+ *
+ * Whenever we have a page fault, we need to see if the fault was caused by %gs being pinned to 0 in OpenBSD
+ * For this we parse the command assuming %gs was 0 (fault was at "zero-page"), find if it is really %gs command
+ * and then rewrite it without %gs. Sometimes another thread will already rewrite gs to fs/jmp and we just need a retry.
+ * We have 4 approaches
+ * 1. In place - this is NtCurrentTeb() call. It always compiles into mov %gs:0x30, %r
+ *      for this to work, since we have ref to teb in our teb_tls_offset, we can just replace few values in the command itself
+ *      for example
+ *      65 48 8b 04 25 30 00 00 00          mov %gs:0x30, %rax
+ *      64 48 8b 04 25 xx xx xx xx          mov %fs:teb_tls_offset, %rax --- where teb_tls_offset is negative
+ *
+ *      this replacement is very stable and does not require us to create any weird stubs.
+ *      SOURCE OF THE DECOMP: wine's own compiled code for NtCurrentTeb() in winnt.h for defined(__x86_64__) && defined(__GNUC__)
+ *          other cases will be handled in approach 3
+ *
+ * 2. Generic Stub (if approach 3 failed - this is easier to cover second even though it is handled 3rd)
+ *      for this to work, the instruction has to be 5 bytes or longer. If it is, and we find a spot to park a stub in rel32
+ *      we can replace it with a jmp rel32 command to a stub that rewrites the command without %gs.
+ *      This can be done with ANY command that is 5 bytes or longer. If command is less than 5 bytes, we don't have enough space
+ *      to replace it. I will have to be handled by case 4 (with notable exception in case 3), but commands like that are rare.
+ *      This replacement is stable but we have to specifically handle case when thread is being stopped inside of the stub
+ *      more on that in gs_leave_stub
+ *
+ *      SOURCE OF THE DECOMP: no need to decompile anything, it's a stable replacement, regardless of the command
+ *
+ * 3. Pair Stub - investigations into faults with apps that use mimalloc (MIT license, include/mimalloc/prim.h) shows that
+ *      mimalloc inlines TlsGetValue() in form of a four-byte mov %gs(%R'),%D which has no room for a jmp rel32.
+ *      Thankfully it also puts address arithmetic lea in front of it.
+ *      x86 cannot be decoded backwards, so even if we did find it we need to check that the register in the mov is also %R'
+ *      and inex register in lea itself should also be different from %R' because otherwise we would lost the index in the stub.
+ *
+ *      SOURCE OF THE DECOMP: mimalloc - MIT licensed
+ *
+ * 4. Everything else - we will pay a full SIGSEGV trip here every time. We want so that most cases are handled before this one
+ *
+ *
+ * Stubs do not use the stack and scratch register is saved in the TLS's second qword.
+ * This means %rsp is the same inside of a stub as at the site. This also means that we can safely leave stub either to before jump
+ * or after jump, depending on where exactly we stopped.
+ */
+
+/* Code building constants */
+#define JMP_REL32           0xe9    /* used to replace the command and then jump back from the stub */
+#define JMP_REL32_LEN       5       /* length of JMP_REL32 - e9 and 32 bits of rel jump offset */
+#define JMP_RIP             0xff    /* jmp *0(%rip) */
+#define INT3                0xcc    /* we are using int3 to pad our codestubs and source of our jumps to trap any stray jumps */
+#define LEA                 0x8d    /* lea */
+#define MOV_STORE           0x89    /* mov mem, reg */
+#define MOV_LOAD            0x8b    /* mov reg, mem */
+#define FS_MOV_LEN          9       /* length of emit_fs_mov()'s instructions */
+#define GS_LEA_MAX          8       /* longest lea that we recognize for gs pair */
+#define GS_PAIR_MAX         (GS_LEA_MAX + MAX_INSN_LEN)
+
+/* what stub replaced */
+enum gs_stub_kind
+{
+    GS_STUB_PLAIN, /* replaced a %gs instruction on its own */
+    GS_STUB_PAIR   /* replaced a lea + %gs instruction that uses that register */
+};
+
+/* stub details and its code
+ * code goes first so it is in one cache
+ */
+struct gs_stub
+{
+    BYTE  code[CODE_STUB_SLOT_SIZE - 48];
+    BYTE *site;                     /* address of the %gs instruction */
+    BYTE  code_len;                 /* length of our code block */
+    BYTE  insn[MAX_INSN_LEN];       /* original bytes of the command */
+    BYTE  insn_len;                 /* length of the original command */
+    BYTE  scratch;                  /* which register we picked as scratch (0-7) */
+    BYTE  op_start;                 /* offset in code[] of the rewritten instruction */
+    BYTE  op_end;                   /* offset in code just after it - there we will restore the scratch reg */
+    BYTE  kind;                     /* of type enum gs_stub_kind */
+    BYTE  lea_len;                  /* for stub pair - length of the lea */
+    BYTE  lea[GS_LEA_MAX];          /* original bytes of the lea command */
+    BYTE  pad[10];                  /* the header is 48 bytes */
+};
+
+C_ASSERT( sizeof(struct gs_stub) == CODE_STUB_SLOT_SIZE );
+C_ASSERT( offsetof(struct gs_stub, code) == 0 );
+
+/* Code generators for the stub */
+
+/***********************************************************************
+ *           emit_fs_mov
+ * generates
+ * mov %reg,%fs:disp
+ * or
+ * mov %fs:disp, %reg
+ * bytecode: 64 48 89/8b ModRM(00,reg,100) 25 disp32
+ */
+static BYTE *emit_fs_mov( BYTE *p, BYTE opcode, unsigned int reg, int disp )
+{
+    *p++ = PREFIX_FS;
+    *p++ = REX_BASE | REX_W;
+    *p++ = opcode;
+    *p++ = MODRM( 0, reg, MODRM_RM_SIB );
+    *p++ = SIB_ABSOLUTE;
+    memcpy( p, &disp, 4);
+    return p + 4;
+}
+
+/***********************************************************************
+ *           build_gs_stub
+ *
+ * Builds the stub for a %gs instruction at a site. This handles non-lea pair cases
+ *
+ * Stub for a %gs instruction looks like this
+ * code[0]                  mov %S,%fs:slot+8           save the scratch register S
+ * code[9]                  mov %fs:slot, %S            S = TEB
+ * code[18]                 lea 0(%base, %S, 1), %S     S = TEB + base , if base register
+ * code[op_start]           <the instruction>           [S + index*scale + disp32] instead of %gs:...
+ * code[op_end]             mov %fs:slot+8, %S          restore S
+ *                          jmp *0(%rip)                back to next instruction
+ *                          .quad site + len
+ *
+ * none of the added instructions change the flags.
+ */
+static void build_gs_stub( struct gs_stub *stub, BYTE *site, const struct gs_insn *insn )
+{
+    unsigned int i, s;
+    int slot = teb_tls_offset;
+    int scratch_slot = slot + 8;
+    int disp = insn->disp;
+    ULONG_PTR ret_addr = (ULONG_PTR)site + insn->len;
+    int reg_full = insn->reg;
+    BYTE *p = stub->code;
+
+    /* Find an unused register. At most 3 are used, so out of 7 we will always find something */
+    if (insn->high_byte) reg_full -= 4;
+    for (s = GS_RAX; s <= GS_RDI; s++)
+        if (s != GS_RSP && (int)s != reg_full && (int)s != insn->base && (int)s != insn->index) break;
+
+    memset( stub, INT3, sizeof(*stub) ); /* trap stray calls/jumps */
+    stub->site = site;
+    memcpy( stub->insn, insn->bytes, insn->len );
+    stub->insn_len = insn->len;
+    stub->scratch = s;
+    stub->kind = GS_STUB_PLAIN;
+    stub->lea_len = 0;
+
+    p = emit_fs_mov( p, MOV_STORE, s, scratch_slot );       /* mov %S, %fs:slot+8 */
+    p = emit_fs_mov( p, MOV_LOAD,  s, slot);                /* mov %fs:slot, %S */
+
+    if (insn->base != -1)
+    {
+        /* lea 0(%base,%S,1), %S. REX.W, plus REX.B for a base 8-15
+         * ModRM mod 01, rm 100; SIB index S, base, disp8 0
+         */
+        *p++ = REX_BASE | REX_W | (insn->base >= 8 ? REX_B : 0);
+        *p++ = LEA;
+        *p++ = MODRM( 1, s, MODRM_RM_SIB );
+        *p++ = SIB( 0, s, insn->base );
+        *p++ = 0;
+    }
+
+    stub->op_start = p - stub->code;
+    /* copy old instruction bytes */
+    /* legacy prefixes, without the seg prefix */
+    for (i = 0; i < insn->rex_pos; i++) if (i != insn->seg_pos) *p++ = insn->bytes[i];
+    /* REX: W and R stay; X only if there is still an index 8-15; B removed, the base is now S (0-7 w/o %rsp)
+     * Without REX: don't add a new one (S and any index are 0-7) so %ah..%bh stay what they are */
+    if (insn->rex)
+    {
+        if (insn->moffs) *p++ = REX_BASE | (insn->rex & REX_W);
+        else *p++ = REX_BASE | (insn->rex & (REX_W | REX_R)) | (insn->index >= 8 ? REX_X : 0);
+    }
+    if (insn->moffs)
+    {
+        /* modrm forms a0 -> 8a (load 8), a1 -> 8b (load), a2 -> 88 (store 8), a3 -> 89 (store) */
+        static const BYTE modrm_form[4] = { 0x8a, 0x8b, 0x88, 0x89 };
+        *p++ = modrm_form[insn->opcode - 0xa0];
+        *p++ = MODRM( 2, GS_RAX, MODRM_RM_SIB );
+    }
+    else
+    {
+        /* opcode bytes as they are and ModRM with the same reg, mod 10 (disp32), rm 100 (SIB) */
+        *p++ = insn->bytes[insn->opcode_pos];
+        if (insn->opcode >= 0x100) *p++ = insn->bytes[insn->opcode_pos + 1];
+        *p++ = MODRM( 2, insn->ext, MODRM_RM_SIB );
+    }
+    /* SIB: base S, and then original index and scale */
+    if (insn->index != -1) *p++ = SIB( insn->scale, insn->index, s );
+    else *p++ = SIB( 0, SIB_NO_INDEX, s );
+    memcpy( p, &disp, 4);
+    p += 4;
+    /* immediate as is */
+    memcpy( p, insn->bytes + insn->imm_pos, insn->imm_len );
+    p += insn->imm_len;
+    stub->op_end = p - stub->code;
+
+    p = emit_fs_mov( p, MOV_LOAD, s, scratch_slot); /* mov %fs:slot+8, %S */
+    /* jmp *0(%rip) */
+    *p++ = JMP_RIP;
+    *p++ = MODRM( 0, 4, MODRM_RM_DISP );
+    memset( p, 0, 4); /* disp32 = 0 */
+    p += 4;
+    memcpy( p, &ret_addr, 8);
+    p += 8;
+    stub->code_len = p - stub->code;
+}
+
+static ULONG_PTR get_gs_insn_offset( const struct gs_insn *insn, ucontext_t *ucontext )
+{
+    ULONG_PTR offset = insn->disp;
+
+    if (insn->base != -1) offset += *get_gs_reg( ucontext, insn->base );
+    if (insn->index != -1) offset += *get_gs_reg( ucontext, insn->index ) << insn->scale;
+
+    return offset;
+}
+
+/* Static redirect for fail-all cases */
+#define GS_REDIRECTS 4096 /* want to keep low, but on a safer side. Without cases 1-3 we would have 10k+ of cases here */
+static struct gs_stub *gs_redirects[GS_REDIRECTS];
+static pthread_mutex_t gs_redirect_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static unsigned int gs_redirect_hash( const BYTE *site )
+{
+    /* Fib hashing and then 4096 entires. Should be fine. We shouldn't have lots of cases here anyways */
+    return ((ULONG_PTR)site * 0x9e3779b97f4a7c15ull) >> (64 - 12);
+}
+
+static BOOL is_same_gs_site( const struct gs_stub *stub, const BYTE *site, const struct gs_insn *insn )
+{
+    return stub->site == site && stub->insn_len == insn->len && !memcmp( stub->insn, insn->bytes, insn->len );
+}
+
+/* returns redirect stub for this site and instruction, if any. Lock free */
+static struct gs_stub *find_gs_redirect( const BYTE *site, const struct gs_insn *insn)
+{
+    unsigned int i;
+    struct gs_stub *stub;
+    unsigned int h = gs_redirect_hash( site );
+
+    for (i = 0; i < GS_REDIRECTS; i++)
+    {
+        if(!(stub = __atomic_load_n( &gs_redirects[(h + i) % GS_REDIRECTS], __ATOMIC_ACQUIRE ))) break;
+        if(stub->site == site) return is_same_gs_site( stub, site, insn ) ? stub : NULL;
+    }
+
+    return NULL;
+}
+
+/* adds a redirect; returns the stub to use. If another thread was faster - returns their stub. NULL if table is full */
+static struct gs_stub *add_gs_redirect( struct gs_stub *new_stub, const struct gs_insn *insn )
+{
+    unsigned int i;
+    struct gs_stub *stub;
+    sigset_t sigset;
+    unsigned int h = gs_redirect_hash( new_stub->site );
+    struct gs_stub *ret = NULL;
+
+    server_enter_uninterrupted_section( &gs_redirect_mutex, &sigset );
+    for (i = 0; i < GS_REDIRECTS; i++)
+    {
+        struct gs_stub **entry = &gs_redirects[(h + i) % GS_REDIRECTS];
+        if ((stub = *entry) && stub->site != new_stub->site) continue;
+        if (stub && is_same_gs_site( stub, new_stub->site, insn )) ret = stub; /* already there */
+        else
+        {
+            __atomic_store_n( entry, new_stub, __ATOMIC_RELEASE ); /* free, or a stale entry */
+            ret = new_stub;
+        }
+        break;
+    }
+    server_leave_uninterrupted_section( &gs_redirect_mutex, &sigset );
+    return ret;
+}
+
+
+
+/***********************************************************************
+ *           gs_handle_fault
+ * Page fault handler
+ */
+BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr )
+{
+    BYTE bytes[MAX_INSN_LEN], new_bytes[MAX_INSN_LEN];
+    struct gs_stub stub, *slot, *used;
+    struct gs_insn insn;
+    unsigned int i, avail, n;
+    ULONG_PTR offset;
+    BOOL patched;
+    LONG64 disp;
+    LONG_PTR rel;
+    int self_pos;
+    BYTE *rip = (BYTE *)ucontext->sc_rip;
+
+    /* since %gs pins value to 0, TEB access faults at 0+TEB offset */
+    if (fault_addr >= sizeof(TEB)) return FALSE;
+
+    if (!(avail = virtual_uninterrupted_read_memory( rip, bytes, sizeof(bytes) ))) return FALSE;
+
+    if (!decode_gs_insn( &insn, bytes, avail ) || insn.seg != PREFIX_GS) return FALSE;
+
+    offset = get_gs_insn_offset( &insn, ucontext );
+    if (offset != fault_addr) return FALSE; /* the fault isn't this instruction's %gs access */
+    if (offset + insn.size > sizeof(TEB)) return FALSE; /* not a TEB fault */
+
+    /* seen before site that can't be patched -> just jump to stub*/
+    if ((slot = find_gs_redirect( rip, &insn ))) goto redirect;
+
+    /* generate a stub */
+    build_gs_stub( &stub, rip, &insn );
+    if (!(slot = virtual_alloc_code_stub( rip, &stub, sizeof(stub) )))
+    {
+        WARN( "%p: no memory for a %%gs stub\n", rip);
+        return FALSE;
+    }
+
+    /* case 4 - unpatchable redirect */
+    if (!(used = add_gs_redirect( slot, &insn )))
+    {
+        WARN( "%p: too many %%gs sites that can't be patched\n", rip);
+        virtual_free_code_stub( slot );
+        return FALSE;
+    }
+    if (used != slot) virtual_free_code_stub( slot );
+    slot = used;
+redirect:
+    ucontext->sc_rip = (ULONG_PTR)slot->code;
+    return TRUE;
+}
 
 #endif /* defined(__OpenBSD__)*/
