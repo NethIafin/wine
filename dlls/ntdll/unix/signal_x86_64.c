@@ -2676,6 +2676,17 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     ucontext_t *sigcontext = _sigcontext;
     struct thread_data *data = init_handler( sigcontext );
 
+#ifdef __OpenBSD__
+    /* server can only signal the whole process.
+     * Pass SIGUSR to the thread it was meant for as SIGUSR2, and only continue
+     * if this thread was the target */
+    if (signal == SIGUSR1 && !forward_thread_signal( SIGUSR2 )) return;
+    /* not a wine thread? */
+    if (!is_signal_thread()) return;
+    /* suspended in a gs stub? Leave */
+    gs_leave_stub( sigcontext );
+#endif
+
     if (!data->teb)
     {
         server_select( NULL, 0, SELECT_INTERRUPTIBLE, 0, NULL, NULL );

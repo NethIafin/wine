@@ -749,6 +749,30 @@ static struct gs_stub *add_gs_redirect( struct gs_stub *new_stub, const struct g
     return ret;
 }
 
+/* checks if something already rewritten the instruction. If yes, we can just re-run it
+ * Don't ask me how many hours I had to spend to find that you actually need this.
+ */
+static BOOL is_gs_rewritten( BYTE *rip, const BYTE *bytes, unsigned int avail,
+                             ucontext_t *ucontext, ULONG_PTR fault_addr )
+{
+    struct gs_insn insn;
+    struct gs_stub *stub;
+    int rel;
+
+    if (avail >= JMP_REL32_LEN && bytes[0] == JMP_REL32)
+    {
+        memcpy( &rel, bytes + 1, 4 );
+        if (!(stub = virtual_code_stub_slot( rip + JMP_REL32_LEN + rel )) || stub->site != rip) return FALSE;
+        return decode_gs_insn( &insn, stub->insn, stub->insn_len) &&
+            get_gs_insn_offset( &insn, ucontext ) == fault_addr;
+    }
+
+    if (!decode_gs_insn( &insn, bytes, avail ) || insn.seg != PREFIX_FS) return FALSE;
+    if (insn.base != -1 || insn.index != -1) return FALSE;
+    if (insn.disp < teb_tls_offset || insn.disp >= teb_tls_offset + (LONG64)sizeof(void *)) return FALSE;
+    return offsetof( TEB, Tib.Self ) + (insn.disp - teb_tls_offset) == fault_addr;
+}
+
 
 
 /***********************************************************************
@@ -772,6 +796,7 @@ BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr )
     if (fault_addr >= sizeof(TEB)) return FALSE;
 
     if (!(avail = virtual_uninterrupted_read_memory( rip, bytes, sizeof(bytes) ))) return FALSE;
+    if (is_gs_rewritten( rip, bytes, avail, ucontext, fault_addr )) return TRUE;
 
     if (!decode_gs_insn( &insn, bytes, avail ) || insn.seg != PREFIX_GS) return FALSE;
 
@@ -873,6 +898,8 @@ BOOL gs_leave_stub( ucontext_t *ucontext )
     }
 
     ucontext->sc_rip = (ULONG_PTR)stub->site + (pos <= stub->op_start ? 0 : stub->insn_len);
+
+    return TRUE;
 }
 
 #endif /* defined(__OpenBSD__)*/
