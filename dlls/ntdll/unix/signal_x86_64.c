@@ -2395,6 +2395,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 
 #ifdef __OpenBSD__
     fixup_sigcontext( siginfo, sigcontext );
+    if (gs_leave_stub( sigcontext )) rec.ExceptionAddress = (void *)RIP_sig(sigcontext);
 #endif
 
     save_context( data, &context, sigcontext );
