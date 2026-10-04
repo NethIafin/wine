@@ -1680,6 +1680,9 @@ void server_init_process( struct thread_data *data )
     {
         req->unix_pid    = getpid();
         req->unix_tid    = get_unix_tid();
+#ifdef __OpenBSD__
+        add_signal_tid( req->unix_tid );
+#endif
         req->reply_fd    = reply_pipe;
         req->wait_fd     = data->wait_fd[1];
         req->debug_level = (TRACE_ON(server) != 0);
@@ -1705,6 +1708,18 @@ void server_init_process( struct thread_data *data )
     close( reply_pipe );
 
     if (ret) server_protocol_error( "init_first_thread failed with status %x\n", ret );
+
+#ifdef __OpenBSD__
+    /* with an inherited connection server_dir is not set yet */
+    const char *dir = server_dir;
+    char *alloc_dir = NULL;
+    struct stat st;
+
+    if (!dir && stat( config_dir, &st ) != -1)
+        dir = alloc_dir = (char *)init_server_dir( st.st_dev, st.st_ino );
+    init_signal_targets( dir, pid );
+    free( alloc_dir );
+#endif
 
     if (!supported_machines_count)
         fatal_error( "'%s' is a 64-bit installation, it cannot be used with a 32-bit wineserver.\n",
@@ -1789,6 +1804,9 @@ void server_init_thread( struct thread_data *data )
     SERVER_START_REQ( init_thread )
     {
         req->unix_tid  = get_unix_tid();
+#ifdef __OpenBSD__
+        add_signal_tid( req->unix_tid );
+#endif
         req->teb       = wine_server_client_ptr( teb64 ? (void *)teb64 : (void *)data->teb );
         req->reply_fd  = reply_pipe;
         req->wait_fd   = data->wait_fd[1];
