@@ -792,4 +792,37 @@ redirect:
     return TRUE;
 }
 
+/***********************************************************************
+ *           gs_leave_stub
+ *
+ * If thread was stopped in a stub, we need to move it outside, so that nothing else sees a stub address.
+ *
+ * By position, we can split it into 4 cases
+ * [0, 9)           nothing done yet                    -> return to site
+ * [9, op_start]    S saved, instruction not run        -> return to site       restore S from TLS scratch
+ * op_end           instruction done, S not restored    -> site+len             restore S from TLS scratch
+ * (op_end+9, end)  we were actually almost done        -> site+len
+ */
+BOOL gs_leave_stub( ucontext_t *ucontext )
+{
+    struct gs_stub *stub;
+    unsigned int pos;
+    ULONG64 saved;
+    BYTE *rip = (BYTE *)ucontext->sc_rip;
+
+    if (!(stub = virtual_code_stub_slot( rip ))) return FALSE; /* not in a stub slot */
+    if (rip < stub->code || rip >= stub->code + stub->code_len) return FALSE; /* somehow in a stub but not in stub code? */
+
+    pos = rip - stub->code;
+
+    if (pos >= FS_MOV_LEN && pos < stub->op_end + FS_MOV_LEN)
+    {
+        /* sig handler runs on the same thread, so we just grab it from TLS scratch */
+        __asm__( "movq %%fs:(%1),%0" : "=r" (saved) : "r" (teb_tls_offset + 8) );
+        *get_gs_reg( ucontext, stub->scratch ) = saved;
+    }
+
+    ucontext->sc_rip = (ULONG_PTR)stub->site + (pos <= stub->op_start ? 0 : stub->insn_len);
+}
+
 #endif /* defined(__OpenBSD__)*/

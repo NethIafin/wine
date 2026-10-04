@@ -38,6 +38,8 @@ extern void gs_init_process(void);
 extern void gs_set_thread_teb( TEB *teb );
 /* handle gs page fault */
 extern BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr );
+/* leave stub if thread has stopped in it during fault. TRUE if it was in a gs stub */
+extern BOOL gs_leave_stub( ucontext_t *ucontext );
 
 
 #endif /* #if defined(__OpenBSD__) */
