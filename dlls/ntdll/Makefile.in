@@ -62,6 +62,7 @@ SOURCES = \
 	unix/security.c \
 	unix/serial.c \
 	unix/server.c \
+	unix/sig_openbsd.c \
 	unix/signal_arm.c \
 	unix/signal_arm64.c \
 	unix/signal_i386.c \

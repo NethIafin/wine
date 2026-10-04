@@ -4842,7 +4842,7 @@ enum patch_result virtual_patch_code( void *addr, const void *old_bytes, const v
     {
         BYTE vprot = get_host_page_vprot( page + i );
         int uprot = get_unix_prot( vprot );
-        if(uprot & (PROT_READ | PROT_WRITE | PROT_EXEC) != (PROT_READ | PROT_EXEC))
+        if((uprot & (PROT_READ | PROT_WRITE | PROT_EXEC)) != (PROT_READ | PROT_EXEC))
             goto done;
     }
 

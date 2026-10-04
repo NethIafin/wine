@@ -1121,6 +1121,9 @@ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
     close( data->wait_fd[1] );
     close( data->reply_fd );
     close( data->request_fd );
+#ifdef __OpenBSD__
+    remove_signal_tid();
+#endif
     pthread_exit( UIntToPtr(status) );
 }
 

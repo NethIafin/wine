@@ -1741,6 +1741,10 @@ DECL_HANDLER(init_first_thread)
     current->unix_pid = process->unix_pid = req->unix_pid;
     current->unix_tid = req->unix_tid;
 
+#ifdef __OpenBSD__
+    init_process_signal_targets( process );
+#endif
+
     if (!process->parent_id)
         process->affinity = current->affinity = get_thread_affinity( current );
     else
