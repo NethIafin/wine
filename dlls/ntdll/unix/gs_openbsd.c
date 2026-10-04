@@ -679,6 +679,18 @@ static ULONG_PTR get_gs_insn_offset( const struct gs_insn *insn, ucontext_t *uco
     return offset;
 }
 
+static int gs_in_place_offset( const struct gs_insn *insn, ULONG_PTR offset )
+{
+    const ULONG_PTR self = offsetof( TEB, Tib.Self ); /* should be 0x30 */
+
+    /* right command */
+    if (!insn->read_only || insn->base != -1 || insn->index != -1) return -1;
+
+    if (offset < self || offset + insn->size > self + sizeof(void *)) return -1;
+
+    return offset - self; /* located offset bytes that we need to change */
+}
+
 /* Static redirect for fail-all cases */
 #define GS_REDIRECTS 4096 /* want to keep low, but on a safer side. Without cases 1-3 we would have 10k+ of cases here */
 static struct gs_stub *gs_redirects[GS_REDIRECTS];
@@ -770,12 +782,50 @@ BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr )
     /* seen before site that can't be patched -> just jump to stub*/
     if ((slot = find_gs_redirect( rip, &insn ))) goto redirect;
 
+    /* 1. In place update %gs->%fs, and then instead of TEB offset (0x30) -> TLS slot */
+    if ((self_pos = gs_in_place_offset( &insn, offset )) != -1)
+    {
+        /* just change the command */
+        memcpy( new_bytes, insn.bytes, insn.len ); /* first copy it as is */
+        new_bytes[insn.seg_pos] = PREFIX_FS; /* replace %gs with %fs */
+        disp = teb_tls_offset + self_pos; /* fits a disp32 and same in moffs64 */
+        memcpy( new_bytes + insn.disp_pos, &disp, insn.disp_len );
+        /* then patch it in one go */
+        switch (virtual_patch_code( rip, insn.bytes, new_bytes, insn.len ))
+        {
+            case PATCH_DONE:
+                /* no stub created for this so we can treat DONE same as if someone else changed the instruction */
+            case PATCH_CHANGED:
+                return TRUE;
+            case PATCH_FAILED:
+                break;
+        }
+    }
+
     /* generate a stub */
     build_gs_stub( &stub, rip, &insn );
     if (!(slot = virtual_alloc_code_stub( rip, &stub, sizeof(stub) )))
     {
         WARN( "%p: no memory for a %%gs stub\n", rip);
         return FALSE;
+    }
+
+    rel = slot->code - (rip + JMP_REL32_LEN); /* the allocator has to keep it within rel32 reach */
+    if (insn.len >= JMP_REL32_LEN && rel == (int)rel)
+    {
+        new_bytes[0] = JMP_REL32;
+        memcpy( new_bytes + 1, &rel, 4 );
+        memset( new_bytes + JMP_REL32_LEN, INT3, insn.len - JMP_REL32_LEN ); /* stamp everything else with INT3 */
+        switch (virtual_patch_code( rip, insn.bytes, new_bytes, insn.len ))
+        {
+            case PATCH_DONE:
+                return TRUE;
+            case PATCH_CHANGED:
+                virtual_free_code_stub( slot ); /* someone already did it, free old slot */
+                return TRUE;
+            case PATCH_FAILED:
+                break;
+        }
     }
 
     /* case 4 - unpatchable redirect */
