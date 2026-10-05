@@ -1650,7 +1650,18 @@ then
          AC_LINK_IFELSE([AC_LANG_PROGRAM([[#ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
 #endif
-#include <resolv.h>]],[[if (!(_res.options & RES_INIT)) res_init(); res_query("foo",ns_c_in,0,0,0); ns_initparse(0,0,0)]])],
+#ifdef HAVE_ARPA_NAMESER_H
+#include <arpa/nameser.h>
+#endif
+#include <resolv.h>
+#ifdef __OpenBSD__
+#define ns_c_in C_IN
+#endif]],[[if (!(_res.options & RES_INIT)) res_init();
+res_query("foo",ns_c_in,0,0,0);
+#ifndef __OpenBSD__
+ns_initparse(0,0,0);
+#endif
+]])],
            [ac_cv_have_resolv=${lib:-"none required"}],[ac_cv_have_resolv="not found"])
          test "x$ac_cv_have_resolv" = "xnot found" || break
        done
@@ -1820,7 +1831,9 @@ if test "x$with_sdl" != "xno"
 then
     WINE_PACKAGE_FLAGS(SDL2,[sdl2],[-lSDL2],,,
         [AC_CHECK_HEADERS([SDL.h],
-            [WINE_CHECK_SONAME(SDL2,SDL_Init,,,,[[libSDL2-2.0*]])])])
+            [AS_CASE([$host_os],
+                [openbsd*], [WINE_CHECK_SONAME(SDL2,SDL_Init)],
+                [WINE_CHECK_SONAME(SDL2,SDL_Init,,,,[[libSDL2-2.0*]])])])])
 fi
 WINE_NOTICE_WITH(sdl,[test "x$ac_cv_lib_soname_SDL2" = "x"],
                  [libSDL2 ${notice_platform}development files not found, SDL2 won't be supported.])
