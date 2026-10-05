@@ -1546,6 +1546,8 @@ static int get_unix_tid(void)
     ret = lwpid;
 #elif defined(__DragonFly__)
     ret = lwp_gettid();
+#elif defined(__OpenBSD__)
+    ret = getthrid();
 #endif
     return ret;
 }
