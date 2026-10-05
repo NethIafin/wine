@@ -17958,11 +17958,22 @@ else case e in #(
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
 #endif
+#ifdef HAVE_ARPA_NAMESER_H
+#include <arpa/nameser.h>
+#endif
 #include <resolv.h>
+#ifdef __OpenBSD__
+#define ns_c_in C_IN
+#endif
 int
 main (void)
 {
-if (!(_res.options & RES_INIT)) res_init(); res_query("foo",ns_c_in,0,0,0); ns_initparse(0,0,0)
+if (!(_res.options & RES_INIT)) res_init();
+res_query("foo",ns_c_in,0,0,0);
+#ifndef __OpenBSD__
+ns_initparse(0,0,0);
+#endif
+
   ;
   return 0;
 }
