@@ -106,7 +106,16 @@ BOOL forward_thread_signal( int sig )
         return for_self;
     }
 
-    /* fixme: add overflow handling */
+    /* handle overflows and global sends */
+
+    if (signal_targets)
+        for (i = 1; i < SIGNAL_TARGETS_COUNT; i++)
+            __atomic_store_n( &signal_targets[i], 0, __ATOMIC_SEQ_CST );
+
+    for (i = 0; i < MAX_SIGNAL_TIDS; i++)
+        if ((tid = __atomic_load_n( &signal_tids[i], __ATOMIC_SEQ_CST )) && tid != self)
+            thrkill( tid, sig, NULL );
+
     return TRUE;
 }
 

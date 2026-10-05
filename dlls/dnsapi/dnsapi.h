@@ -134,4 +134,8 @@ enum unix_funcs
     unix_funcs_count
 };
 
+#ifdef __OpenBSD__
+#define RESOLV_CALL( func, params ) (__wine_unixlib_handle ? WINE_UNIX_CALL( unix_ ## func, params ) : ERROR_NOT_SUPPORTED)
+#else
 #define RESOLV_CALL( func, params ) WINE_UNIX_CALL( unix_ ## func, params )
+#endif
