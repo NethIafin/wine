@@ -1828,7 +1828,9 @@ if test "x$with_sdl" != "xno"
 then
     WINE_PACKAGE_FLAGS(SDL2,[sdl2],[-lSDL2],,,
         [AC_CHECK_HEADERS([SDL.h],
-            [WINE_CHECK_SONAME(SDL2,SDL_Init,,,,[[libSDL2-2.0*]])])])
+            [AS_CASE([$host_os],
+                [openbsd*], [WINE_CHECK_SONAME(SDL2,SDL_Init)],
+                [WINE_CHECK_SONAME(SDL2,SDL_Init,,,,[[libSDL2-2.0*]])])])])
 fi
 WINE_NOTICE_WITH(sdl,[test "x$ac_cv_lib_soname_SDL2" = "x"],
                  [libSDL2 ${notice_platform}development files not found, SDL2 won't be supported.])

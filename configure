@@ -18773,7 +18773,73 @@ do :
 if test "x$ac_cv_header_SDL_h" = xyes
 then :
   printf '%s\n' "#define HAVE_SDL_H 1" >>confdefs.h
- { printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking for -lSDL2" >&5
+ case $host_os in #(
+  openbsd*) :
+    { printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking for -lSDL2" >&5
+printf %s "checking for -lSDL2... " >&6; }
+if test ${ac_cv_lib_soname_SDL2+y}
+then :
+  printf %s "(cached) " >&6
+else case e in #(
+  e) ac_check_soname_save_LIBS=$LIBS
+LIBS="-lSDL2  $LIBS"
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.
+   The 'extern "C"' is for builds by C++ compilers;
+   although this is not generally supported in C code supporting it here
+   has little cost and some practical benefit (sr 110532).  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char SDL_Init (void);
+int
+main (void)
+{
+return SDL_Init ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+  case "$LIBEXT" in
+    dll) ac_cv_lib_soname_SDL2=`$ac_cv_path_LDD conftest.exe | grep "SDL2" | sed -e "s/dll.*/dll/"';2,$d'` ;;
+    dylib) ac_cv_lib_soname_SDL2=`$OTOOL -L conftest$ac_exeext | grep "libSDL2\\.[0-9A-Za-z.]*dylib" | sed -e "s/^.*\/\(libSDL2\.[0-9A-Za-z.]*dylib\).*$/\1/"';2,$d'` ;;
+    *) ac_cv_lib_soname_SDL2=`$READELF -d conftest$ac_exeext | grep "NEEDED.*libSDL2\\.$LIBEXT" | sed -e "s/^.*\\[\\(libSDL2\\.$LIBEXT[^	 ]*\\)\\].*$/\1/"';2,$d'`
+       if ${ac_cv_lib_soname_SDL2:+false} :
+then :
+  ac_cv_lib_soname_SDL2=`$LDD conftest$ac_exeext | grep "libSDL2\\.$LIBEXT" | sed -e "s/^.*\(libSDL2\.$LIBEXT[^	 ]*\).*$/\1/"';2,$d'`
+fi ;;
+  esac
+else case e in #(
+  e) ac_cv_lib_soname_SDL2= ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+  LIBS=$ac_check_soname_save_LIBS ;;
+esac
+fi
+if ${ac_cv_lib_soname_SDL2:+false} :
+then :
+  { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: not found" >&5
+printf '%s\n' "not found" >&6; }
+
+else case e in #(
+  e) { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_soname_SDL2" >&5
+printf '%s\n' "$ac_cv_lib_soname_SDL2" >&6; }
+
+printf '%s\n' "#define SONAME_LIBSDL2 \"$ac_cv_lib_soname_SDL2\"" >>confdefs.h
+
+        ;;
+esac
+fi ;; #(
+  *) :
+    { printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking for -lSDL2" >&5
 printf %s "checking for -lSDL2... " >&6; }
 if test ${ac_cv_lib_soname_SDL2+y}
 then :
@@ -18835,7 +18901,8 @@ printf '%s\n' "#define SONAME_LIBSDL2 \"$ac_cv_lib_soname_SDL2\"" >>confdefs.h
 
         ;;
 esac
-fi
+fi ;;
+esac
 fi
 
 done
@@ -24862,5 +24929,4 @@ IFS="$ac_save_IFS"
 printf '%s\n' "
 $as_me: Finished.  Do '${MAKE-make}' to compile Wine.
 " >&6
-
 
