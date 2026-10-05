@@ -2987,6 +2987,9 @@ void signal_init_process( TEB *teb )
     if (sigaction( SIGQUIT, &sig_act, NULL ) == -1) goto error;
     sig_act.sa_sigaction = usr1_handler;
     if (sigaction( SIGUSR1, &sig_act, NULL ) == -1) goto error;
+#ifdef __OpenBSD__
+    if (sigaction( SIGUSR2, &sig_act, NULL ) == -1) goto error; /* forwarded SIGUSR1 */
+#endif
     sig_act.sa_sigaction = trap_handler;
     if (sigaction( SIGTRAP, &sig_act, NULL ) == -1) goto error;
     sig_act.sa_sigaction = segv_handler;

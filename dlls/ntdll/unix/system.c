@@ -1612,6 +1612,81 @@ end:
     return nt_status;
 }
 
+#elif defined(__OpenBSD__) && defined(__x86_64__)
+
+#include <cpuid.h>
+
+/* read the deterministic cache parameters (CPUID leaf 4, or 0x8000001d on AMD) */
+static unsigned int get_cpuid_caches( CACHE_DESCRIPTOR *cache, unsigned int max )
+{
+    unsigned int leaf, count = 0, i, regs[4];
+
+    leaf = (__get_cpuid_max( 0, NULL ) >= 4) ? 4 : 0;
+    for (;;)
+    {
+        for (i = 0; leaf && count < max; i++)
+        {
+            unsigned int type, ways, parts, line, sets;
+
+            __cpuid_count( leaf, i, regs[0], regs[1], regs[2], regs[3] );
+            if (!(type = regs[0] & 0x1f)) break;
+            ways = (regs[1] >> 22) + 1;
+            parts = ((regs[1] >> 12) & 0x3ff) + 1;
+            line = (regs[1] & 0xfff) + 1;
+            sets = regs[2] + 1;
+            cache[count].Level = (regs[0] >> 5) & 7;
+            cache[count].Type = type == 1 ? CacheData : type == 2 ? CacheInstruction : CacheUnified;
+            cache[count].Associativity = (regs[0] & 0x200) ? 0xff : ways;  /* 0xff: fully associative */
+            cache[count].LineSize = line;
+            cache[count].Size = ways * parts * line * sets;
+            count++;
+        }
+        if (count || leaf == 0x8000001d) break;
+        if (__get_cpuid_max( 0x80000000, NULL ) < 0x8000001d) break;
+        leaf = 0x8000001d;
+    }
+    return count;
+}
+
+/* OpenBSD doesn't export the CPU topology: report each online CPU as a core (SMT siblings are
+ * disabled by default) in one package and one NUMA node, with the caches from CPUID */
+static NTSTATUS create_logical_proc_info(void)
+{
+    CACHE_DESCRIPTOR cache[16];
+    unsigned int i, j, count;
+    ULONG_PTR all_cpus_mask = 0;
+
+    if (!(count = get_cpuid_caches( cache, ARRAY_SIZE(cache) )))
+    {
+        static const CACHE_DESCRIPTOR defaults[] =
+        {
+            { 1, 8, 64, 32 * 1024, CacheData },
+            { 1, 8, 64, 32 * 1024, CacheInstruction },
+            { 2, 8, 64, 256 * 1024, CacheUnified },
+            { 3, 12, 64, 8 * 1024 * 1024, CacheUnified },
+        };
+        memcpy( cache, defaults, sizeof(defaults) );
+        count = ARRAY_SIZE(defaults);
+    }
+    TRACE( "%u CPUs, %u caches\n", cpu_count, count );
+
+    for (i = 0; i < cpu_count && i < 8 * sizeof(ULONG_PTR); i++)
+    {
+        ULONG_PTR mask = (ULONG_PTR)1 << i;
+
+        all_cpus_mask |= mask;
+        if (!logical_proc_info_add_by_id( RelationProcessorCore, i, mask )) return STATUS_NO_MEMORY;
+        for (j = 0; j < count; j++)
+            if (cache[j].Level < 3 && !logical_proc_info_add_cache( mask, &cache[j] )) return STATUS_NO_MEMORY;
+    }
+    if (!logical_proc_info_add_by_id( RelationProcessorPackage, 0, all_cpus_mask )) return STATUS_NO_MEMORY;
+    for (j = 0; j < count; j++)
+        if (cache[j].Level >= 3 && !logical_proc_info_add_cache( all_cpus_mask, &cache[j] )) return STATUS_NO_MEMORY;
+    if (!logical_proc_info_add_numa_node( all_cpus_mask, 0 )) return STATUS_NO_MEMORY;
+    if (!logical_proc_info_add_group( i, all_cpus_mask )) return STATUS_NO_MEMORY;
+    return STATUS_SUCCESS;
+}
+
 #else
 
 static NTSTATUS create_logical_proc_info(void)

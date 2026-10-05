@@ -1222,7 +1222,13 @@ static DWORD dns_info_alloc( IP_ADAPTER_ADDRESSES *aa, ULONG family, ULONG flags
                 }
             }
             if (servers != (DNS_ADDR_ARRAY *)buf) free( servers );
+#ifdef __OpenBSD__
+            /* no DNS configuration available: report the adapter without DNS servers */
+            if (err && err != DNS_ERROR_NO_DNS_SERVERS && err != ERROR_NOT_SUPPORTED) return err;
+#else
             if (err) return err;
+#endif
+
         }
 
         aa->DnsSuffix = HeapAlloc( GetProcessHeap(), 0, MAX_DNS_SUFFIX_STRING_LENGTH * sizeof(WCHAR) );
