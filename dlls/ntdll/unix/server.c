@@ -705,6 +705,40 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
         if (!self) NtClose( wine_server_ptr_handle(call->dup_handle.dst_process) );
         break;
     }
+#ifdef __OpenBSD__
+    case APC_COPY_MEMORY:
+    {
+        SIZE_T view_size = 0;
+        SIZE_T copied = 0;
+        void *view = NULL;
+
+        result->type = call->type;
+        size = call->copy_memory.size;
+
+        addr = wine_server_get_ptr( call->copy_memory.addr );
+        if ((ULONG_PTR)addr == call->copy_memory.addr && size == call->copy_memory.size )
+        {
+            HANDLE section = wine_server_ptr_handle( call->copy_memory.handle );
+            result->copy_memory.status = NtMapViewOfSection( section, NtCurrentProcess(), &view,
+                                                             0, 0, NULL,
+                                                             &view_size, ViewShare, 0, PAGE_READWRITE );
+            if (!result->copy_memory.status)
+            {
+                /* each stores a local copy that will keep page protections and fault if needed */
+                /* direction? */
+                result->copy_memory.status = NtReadVirtualMemory( NtCurrentProcess(),
+                                     call->copy_memory.write ? view : addr,
+                                     call->copy_memory.write ? addr : view,
+                                     size, &copied );
+            }
+
+            result->copy_memory.size = copied;
+            if (!self) NtClose( section );
+        }
+        else result->copy_memory.status = STATUS_INVALID_PARAMETER;
+        break;
+    }
+#endif
     default:
         server_protocol_error( "get_apc_request: bad type %d\n", call->type );
         break;
