@@ -6764,6 +6764,58 @@ NTSTATUS WINAPI NtMapViewOfSection( HANDLE handle, HANDLE process, PVOID *addr_p
                                 offset_ptr, size_ptr, alloc_type, protect, 0 );
 }
 
+#ifdef __OpenBSD__
+/***********************************************************************
+ *             copy_process_memory
+ * On OpenBSD process can't ptrace non descendants (unless you set kern.global_ptrace=1)
+ * This means target process does the copy thru a section mapped in both processes.
+ * OpenBSD only
+ */
+static unsigned int copy_process_memory( HANDLE process, void *addr, void *buffer,
+                                         SIZE_T size, BOOL write, SIZE_T *copied )
+{
+    union apc_call call;
+    union apc_result result;
+    HANDLE section;
+    unsigned int status;
+    SIZE_T view_size = 0;
+    void *view = NULL;
+    LARGE_INTEGER section_size = { .QuadPart = size };
+
+    *copied = 0;
+
+    /* zero bytes? might as well be success */
+    if (!size) return STATUS_SUCCESS;
+    if ((status = NtCreateSection( &section, SECTION_MAP_READ | SECTION_MAP_WRITE, NULL,
+                                   &section_size, PAGE_READWRITE, SEC_COMMIT, 0 )))
+        return status;
+
+    if (!(status = NtMapViewOfSection( section, NtCurrentProcess(), &view,
+                                       0, 0, NULL,
+                                       &view_size, ViewShare, 0, PAGE_READWRITE )))
+    {
+        if (write) memcpy( view, buffer, size );
+
+        memset( &call, 0, sizeof(call) );
+        call.copy_memory.type          = APC_COPY_MEMORY;
+        call.copy_memory.handle        = wine_server_obj_handle( section );
+        call.copy_memory.addr          = wine_server_client_ptr( addr );
+        call.copy_memory.size          = size;
+        call.copy_memory.write         = write;
+
+        if (!(status = server_queue_process_apc( process, &call, &result )))
+        {
+             status = result.copy_memory.status;
+            *copied = result.copy_memory.size;
+            if (!write) memcpy( buffer, view, *copied );
+        }
+        NtUnmapViewOfSection( NtCurrentProcess(), view );
+    }
+    NtClose( section );
+    return status;
+}
+
+#endif
 /***********************************************************************
  *             NtMapViewOfSectionEx   (NTDLL.@)
  *             ZwMapViewOfSectionEx   (NTDLL.@)
@@ -7192,6 +7244,9 @@ NTSTATUS WINAPI NtReadVirtualMemory( HANDLE process, const void *addr, void *buf
     }
     else
     {
+#ifdef __OpenBSD__
+        status = copy_process_memory( process, (void *)addr, buffer, size, FALSE, &size );
+#else
         SERVER_START_REQ( read_process_memory )
         {
             req->handle = wine_server_obj_handle( process );
@@ -7200,6 +7255,7 @@ NTSTATUS WINAPI NtReadVirtualMemory( HANDLE process, const void *addr, void *buf
             if ((status = wine_server_call( req ))) size = 0;
         }
         SERVER_END_REQ;
+#endif
     }
     if (bytes_read) *bytes_read = size;
     return status;
@@ -7217,6 +7273,9 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
 
     if (virtual_check_buffer_for_read( buffer, size ))
     {
+#ifdef __OpenBSD__
+        status = copy_process_memory( process, (void *)addr, buffer, size, FALSE, &size );
+#else
         SERVER_START_REQ( write_process_memory )
         {
             req->handle     = wine_server_obj_handle( process );
@@ -7226,6 +7285,7 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
             size = reply->written;
         }
         SERVER_END_REQ;
+#endif
     }
     else
     {
