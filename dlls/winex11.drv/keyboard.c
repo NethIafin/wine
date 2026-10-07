@@ -227,7 +227,7 @@ static WORD keyc2scan( unsigned int keycode, unsigned int state )
         if (state & ControlMask) return 0x0146; /* X46 / VK_CANCEL */
         return 0x021d; /* Y1D / VK_PAUSE */
     }
-#elseif __OpenBSD__
+#elif __OpenBSD__
     #define KEY_XFREE86_SYRQ    92
     #define KEY_XFREE86_LSGT    94
     #define KEY_XFREE86_FK11    95
