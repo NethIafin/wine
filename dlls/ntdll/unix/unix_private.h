@@ -122,6 +122,9 @@ struct thread_data
     BOOL         suspend;           /* suspend on startup */
     BOOL         filesys_redir;     /* WOW64_TLS_FILESYSREDIR before the TEB is created */
     pthread_t    pthread_id;        /* pthread thread id */
+#ifdef __OpenBSD__
+    void        *kernel_stack;
+#endif
     void        *jmp_buf;           /* setjmp buffer for exception handling */
     void        *start;             /* thread entry point */
     void        *param;             /* thread entry point parameter */
@@ -471,7 +474,11 @@ static inline void ascii_to_unicode( WCHAR *dst, const char *src, size_t len )
 
 static inline void *get_kernel_stack( struct thread_data *data )
 {
+#ifdef __OpenBSD__
+    return data->kernel_stack;
+#else
     return data->signal_stack + signal_stack_size;
+#endif
 }
 
 static inline struct teb_data *get_teb_data( struct thread_data *data )
