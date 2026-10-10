@@ -7274,7 +7274,7 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
     if (virtual_check_buffer_for_read( buffer, size ))
     {
 #ifdef __OpenBSD__
-        status = copy_process_memory( process, (void *)addr, buffer, size, FALSE, &size );
+        status = copy_process_memory( process, (void *)addr, buffer, size, TRUE, &size );
 #else
         SERVER_START_REQ( write_process_memory )
         {
