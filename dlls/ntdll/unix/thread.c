@@ -1317,7 +1317,12 @@ static NTSTATUS spawn_thread( struct thread_data *data )
 
     pthread_sigmask( SIG_BLOCK, &server_block_set, &sigset );
     pthread_attr_init( &attr );
+#ifdef __OpenBSD__
+    /* Let libpthread allocate and reclaim the native stack. */
+    pthread_attr_setstacksize( &attr, kernel_stack_size );
+#else
     pthread_attr_setstack( &attr, get_kernel_stack( data ), kernel_stack_size );
+#endif
     pthread_attr_setguardsize( &attr, 0 );
     pthread_attr_setscope( &attr, PTHREAD_SCOPE_SYSTEM ); /* force creating a kernel thread */
     InterlockedIncrement( &nb_threads );

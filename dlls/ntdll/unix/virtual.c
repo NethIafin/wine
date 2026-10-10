@@ -4175,6 +4175,9 @@ struct thread_data *virtual_alloc_first_thread_data(void)
     assert( !status );
     set_stack_mapping( view->base, view->size );
     thread_data = init_thread_data( view->base );
+#ifdef __OpenBSD__
+    thread_data->kernel_stack = thread_data->signal_stack + signal_stack_size;
+#endif
     pthread_setspecific( thread_data_key, thread_data );
     return thread_data;
 }
@@ -4286,7 +4289,11 @@ struct thread_data *virtual_alloc_thread_data(void)
     sigset_t sigset;
     struct file_view *view;
     struct thread_data *data = NULL;
+#ifdef __OpenBSD__
+    SIZE_T size = signal_stack_mask + 1;
+#else
     SIZE_T size = signal_stack_mask + 1 + kernel_stack_size;
+#endif
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     status = map_view( &view, NULL, size, 0, VPROT_READ | VPROT_WRITE | VPROT_COMMITTED, limit_4g, 0, 0 );
