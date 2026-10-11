@@ -1832,9 +1832,18 @@ void server_init_thread( struct thread_data *data )
 {
     int reply_pipe;
     TEB64 *teb64 = get_teb64( data->teb );
+#ifdef __OpenBSD__
+    stack_t stack;
+#endif
 
     data->pthread_id = pthread_self();
     pthread_setspecific( thread_data_key, data );
+
+#ifdef __OpenBSD__
+    if (pthread_stackseg_np( data->pthread_id, &stack ))
+        fatal_error( "cannot get the native thread stack\n" );
+    data->kernel_stack = (char *)stack.ss_sp - stack.ss_size;
+#endif
 
     reply_pipe = init_thread_pipe( data );
     SERVER_START_REQ( init_thread )
