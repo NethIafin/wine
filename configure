@@ -11843,6 +11843,9 @@ ac_fn_c_check_header_compile "$LINENO" "netinet/udp_var.h" "ac_cv_header_netinet
      #ifdef HAVE_NETINET_TCP_H
      # include <netinet/tcp.h>
      #endif
+     #ifdef __OpenBSD__
+     # include <netinet/tcp_timer.h>
+     #endif
 "
 if test "x$ac_cv_header_netinet_udp_var_h" = xyes
 then :
@@ -11938,6 +11941,9 @@ ac_fn_c_check_header_compile "$LINENO" "netinet/tcp_var.h" "ac_cv_header_netinet
      #endif
      #ifdef HAVE_NETINET_TCP_H
      # include <netinet/tcp.h>
+     #endif
+     #ifdef __OpenBSD__
+     # include <netinet/tcp_timer.h>
      #endif
 "
 if test "x$ac_cv_header_netinet_tcp_var_h" = xyes
@@ -21689,6 +21695,7 @@ fi
 
 
 ac_fn_c_check_member "$LINENO" "struct tcpstat" "tcps_connattempt" "ac_cv_member_struct_tcpstat_tcps_connattempt" "#include <sys/types.h>
+#include <sys/socket.h>
 #ifdef HAVE_SYS_SOCKETVAR_H
 #include <sys/socketvar.h>
 #endif
@@ -21697,6 +21704,9 @@ ac_fn_c_check_member "$LINENO" "struct tcpstat" "tcps_connattempt" "ac_cv_member
 #endif
 #ifdef HAVE_NETINET_TCP_H
 #include <netinet/tcp.h>
+#endif
+#ifdef __OpenBSD__
+#include <netinet/tcp_timer.h>
 #endif
 #ifdef HAVE_NETINET_TCP_VAR_H
 #include <netinet/tcp_var.h>

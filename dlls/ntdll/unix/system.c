@@ -61,6 +61,9 @@
 #ifdef HAVE_SYS_AUXV_H
 # include <sys/auxv.h>
 #endif
+#ifdef __OpenBSD__
+# include <uvm/uvmexp.h>
+#endif
 #ifdef __APPLE__
 # include <CoreFoundation/CoreFoundation.h>
 # include <IOKit/IOKitLib.h>
@@ -2708,8 +2711,27 @@ static void get_performance_info( SYSTEM_PERFORMANCE_INFORMATION *info )
             if (mem_available) freeram = mem_available;
         }
     }
+#elif defined(__OpenBSD__)
+    {
+        /* uvm_init(9), uvm_sysctl() */
+        int mib[] = { CTL_VM, VM_UVMEXP };
+        struct uvmexp uvm;
+        size_t size = sizeof(uvm);
+
+        if (!sysctl( mib, ARRAY_SIZE(mib), &uvm, &size, NULL, 0 ) && size == sizeof(uvm))
+        {
+            /* npages counts pages managed by UVM. */
+            totalram = (ULONGLONG)uvm.npages * uvm.pagesize;
+            /* free counts free pages, separately from inactive pages. */
+            freeram = (ULONGLONG)uvm.free * uvm.pagesize;
+            /* swpages counts swap pages, each of size pagesize. */
+            totalswap = (ULONGLONG)uvm.swpages * uvm.pagesize;
+            /* swpginuse counts used swap pages; subtract for free swap. */
+            freeswap = (ULONGLONG)(uvm.swpages - uvm.swpginuse) * uvm.pagesize;
+        }
+    }
 #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__) || \
-    defined(__OpenBSD__) || defined(__DragonFly__) || defined(__APPLE__)
+    defined(__DragonFly__) || defined(__APPLE__)
     {
 #ifdef __APPLE__
         unsigned int val;

@@ -890,6 +890,9 @@ AC_CHECK_HEADERS([netinet/udp_var.h netinet/icmp_var.h netinet/icmp6.h netinet/t
      #endif
      #ifdef HAVE_NETINET_TCP_H
      # include <netinet/tcp.h>
+     #endif
+     #ifdef __OpenBSD__
+     # include <netinet/tcp_timer.h>
      #endif])
 
 AC_CHECK_HEADERS([linux/ipx.h linux/irda.h linux/rtnetlink.h],,,
@@ -2306,6 +2309,7 @@ AC_CHECK_MEMBERS([struct icmp6stat.icp6s_error],,,
 dnl Check for struct tcpstat
 AC_CHECK_MEMBERS([struct tcpstat.tcps_connattempt],,,
 [#include <sys/types.h>
+#include <sys/socket.h>
 #ifdef HAVE_SYS_SOCKETVAR_H
 #include <sys/socketvar.h>
 #endif
@@ -2314,6 +2318,9 @@ AC_CHECK_MEMBERS([struct tcpstat.tcps_connattempt],,,
 #endif
 #ifdef HAVE_NETINET_TCP_H
 #include <netinet/tcp.h>
+#endif
+#ifdef __OpenBSD__
+#include <netinet/tcp_timer.h>
 #endif
 #ifdef HAVE_NETINET_TCP_VAR_H
 #include <netinet/tcp_var.h>
