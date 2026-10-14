@@ -2647,6 +2647,7 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
                              .ExceptionAddress = (void *)RIP_sig(sigcontext) };
 
 #ifdef __OpenBSD__
+    /* XXX Unreachable while the SIGABRT handler is disabled on OpenBSD. */
     /* abort() blocks SIGSEGV, but Windows exception dispatch needs it for GS emulation. */
     sigcontext->sc_mask &= ~sigmask(SIGSEGV);
 #endif
@@ -2985,8 +2986,10 @@ void signal_init_process( TEB *teb )
     if (sigaction( SIGINT, &sig_act, NULL ) == -1) goto error;
     sig_act.sa_sigaction = fpe_handler;
     if (sigaction( SIGFPE, &sig_act, NULL ) == -1) goto error;
+#ifndef __OpenBSD__
     sig_act.sa_sigaction = abrt_handler;
     if (sigaction( SIGABRT, &sig_act, NULL ) == -1) goto error;
+#endif
     sig_act.sa_sigaction = quit_handler;
     if (sigaction( SIGQUIT, &sig_act, NULL ) == -1) goto error;
     sig_act.sa_sigaction = usr1_handler;
