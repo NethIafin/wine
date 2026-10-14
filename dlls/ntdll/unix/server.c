@@ -708,6 +708,7 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
 #ifdef __OpenBSD__
     case APC_COPY_MEMORY:
     {
+        HANDLE section = wine_server_ptr_handle( call->copy_memory.handle );
         SIZE_T view_size = 0;
         SIZE_T copied = 0;
         void *view = NULL;
@@ -718,7 +719,6 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
         addr = wine_server_get_ptr( call->copy_memory.addr );
         if ((ULONG_PTR)addr == call->copy_memory.addr && size == call->copy_memory.size )
         {
-            HANDLE section = wine_server_ptr_handle( call->copy_memory.handle );
             result->copy_memory.status = NtMapViewOfSection( section, NtCurrentProcess(), &view,
                                                              0, 0, NULL,
                                                              &view_size, ViewShare, 0, PAGE_READWRITE );
@@ -730,12 +730,12 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
                                      call->copy_memory.write ? view : addr,
                                      call->copy_memory.write ? addr : view,
                                      size, &copied );
+                NtUnmapViewOfSection( NtCurrentProcess(), view );
             }
-
-            result->copy_memory.size = copied;
-            if (!self) NtClose( section );
         }
         else result->copy_memory.status = STATUS_INVALID_PARAMETER;
+        result->copy_memory.size = copied;
+        if (!self) NtClose( section );
         break;
     }
 #endif
