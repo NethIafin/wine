@@ -2646,6 +2646,10 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
                              .ExceptionFlags = EXCEPTION_NONCONTINUABLE,
                              .ExceptionAddress = (void *)RIP_sig(sigcontext) };
 
+#ifdef __OpenBSD__
+    /* abort() blocks SIGSEGV, but Windows exception dispatch needs it for GS emulation. */
+    sigcontext->sc_mask &= ~sigmask(SIGSEGV);
+#endif
     save_context( data, &context, sigcontext );
     setup_raise_exception( data, sigcontext, &rec, &context );
 }
