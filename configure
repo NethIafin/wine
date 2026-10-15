@@ -11877,6 +11877,9 @@ ac_fn_c_check_header_compile "$LINENO" "netinet/icmp_var.h" "ac_cv_header_netine
      #ifdef HAVE_NETINET_TCP_H
      # include <netinet/tcp.h>
      #endif
+     #ifdef __OpenBSD__
+     # include <netinet/tcp_timer.h>
+     #endif
 "
 if test "x$ac_cv_header_netinet_icmp_var_h" = xyes
 then :
@@ -11908,6 +11911,9 @@ ac_fn_c_check_header_compile "$LINENO" "netinet/icmp6.h" "ac_cv_header_netinet_i
      #endif
      #ifdef HAVE_NETINET_TCP_H
      # include <netinet/tcp.h>
+     #endif
+     #ifdef __OpenBSD__
+     # include <netinet/tcp_timer.h>
      #endif
 "
 if test "x$ac_cv_header_netinet_icmp6_h" = xyes
