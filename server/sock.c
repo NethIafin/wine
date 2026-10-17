@@ -4052,7 +4052,13 @@ DECL_HANDLER(send_socket)
          * asyncs will not consume all available space; if there's no space
          * available, the current request won't be immediately satiable.
          */
-        if ((!force_async && sock->nonblocking) || check_fd_events( sock->fd, POLLOUT ))
+        if ((!force_async && sock->nonblocking) ||
+#ifdef __OpenBSD__
+            /* poll(2) does not report unconnected TCP sockets as writable.
+             * Let sendmsg() return ENOTCONN instead of waiting forever. */
+            sock->state == SOCK_UNCONNECTED ||
+#endif
+            check_fd_events( sock->fd, POLLOUT ))
         {
             /* Give the client opportunity to complete synchronously.
              * If it turns out that the I/O request is not actually immediately satiable,
