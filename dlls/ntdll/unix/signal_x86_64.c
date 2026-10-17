@@ -83,6 +83,7 @@ extern void _thread_set_tsd_base(uint64_t);
 #include "wine/asm.h"
 #include "unix_private.h"
 #include "gs_openbsd.h"
+#include "sig_openbsd.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(unwind);
@@ -2619,8 +2620,14 @@ static void fpe_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 static void int_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
     ucontext_t *sigcontext = _sigcontext;
-    struct thread_data *data = init_handler( sigcontext );
+    struct thread_data *data;
     HANDLE handle;
+
+#ifdef __OpenBSD__
+    /* An external SIGINT can also reach a native thread without Wine data. */
+    if (!is_signal_thread()) return;
+#endif
+    data = init_handler( sigcontext );
 
     if (p__wine_ctrl_routine)
     {
@@ -2664,7 +2671,15 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 static void quit_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
     ucontext_t *sigcontext = _sigcontext;
-    struct thread_data *data = init_handler( sigcontext );
+    struct thread_data *data;
+
+#ifdef __OpenBSD__
+    /* The relay uses thrkill() to deliver SIGQUIT to a registered Wine thread.
+     * Signal dispositions are process-wide, so an external SIGQUIT can also
+     * reach a native thread with no Wine signal stack or thread data. */
+    if (!is_signal_thread()) return;
+#endif
+    data = init_handler( sigcontext );
 
     if (is_inside_syscall( data, RSP_sig(sigcontext) )) abort_thread( 0 );
     user_mode_abort_thread( 0, get_syscall_frame( data ));
@@ -2679,15 +2694,13 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
     ucontext_t *sigcontext = _sigcontext;
-    struct thread_data *data = init_handler( sigcontext );
+    struct thread_data *data;
 
 #ifdef __OpenBSD__
-    /* server can only signal the whole process.
-     * Pass SIGUSR to the thread it was meant for as SIGUSR2, and only continue
-     * if this thread was the target */
-    if (signal == SIGUSR1 && !forward_thread_signal( SIGUSR2 )) return;
-    /* not a wine thread? */
     if (!is_signal_thread()) return;
+#endif
+    data = init_handler( sigcontext );
+#ifdef __OpenBSD__
     /* suspended in a gs stub? Leave */
     gs_leave_stub( sigcontext );
 #endif
@@ -2752,6 +2765,20 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
         restore_context( data, &context, sigcontext );
     }
 }
+
+
+#ifdef __OpenBSD__
+/**********************************************************************
+ *		usr2_handler
+ *
+ * Handler for SIGUSR2, used to relay queued server signals.
+ */
+static void usr2_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+{
+    /* The relay can run on native threads without Wine thread data. */
+    forward_thread_signal();
+}
+#endif
 
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -2995,7 +3022,8 @@ void signal_init_process( TEB *teb )
     sig_act.sa_sigaction = usr1_handler;
     if (sigaction( SIGUSR1, &sig_act, NULL ) == -1) goto error;
 #ifdef __OpenBSD__
-    if (sigaction( SIGUSR2, &sig_act, NULL ) == -1) goto error; /* forwarded SIGUSR1 */
+    sig_act.sa_sigaction = usr2_handler;
+    if (sigaction( SIGUSR2, &sig_act, NULL ) == -1) goto error;
 #endif
     sig_act.sa_sigaction = trap_handler;
     if (sigaction( SIGTRAP, &sig_act, NULL ) == -1) goto error;
