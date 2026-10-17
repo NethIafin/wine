@@ -175,9 +175,11 @@ static void *try_dlopen( const char *argv0 )
 __asm__(    ".pushsection .tbss,\"awT\",@nobits\n\t"        /* .tbss: TLS, zero-init in every thread */
             ".p2align 4\n"                                  /* 16-byte aligned */
             "wine_teb_tls_slot:\n\t"
-            ".zero 16 \n\t"                                 /* two words - TEB pointer of the current thread, and space for %gs stub to save a register */
+            ".zero 32 \n\t"                                 /* four words - TEB pointer of the current thread,
+                                                                and space for %gs stub to save a register
+                                                                and now a second one*/
             ".type wine_teb_tls_slot,@tls_object\n\t"
-            ".size wine_teb_tls_slot,16\n\t"
+            ".size wine_teb_tls_slot,32\n\t"
             ".popsection" );
 
 /* offset of the slot from the %fs base. The value should be negative, because TLS blocks of the executable are just below the thread pointer */
