@@ -1677,9 +1677,18 @@ void server_init_process( struct thread_data *data )
     sigaddset( &server_block_set, SIGHUP );
     sigaddset( &server_block_set, SIGQUIT );
     sigaddset( &server_block_set, SIGUSR1 );
-    sigaddset( &server_block_set, SIGUSR2 );
     sigaddset( &server_block_set, SIGCHLD );
+#ifdef __OpenBSD__
+    /* Block the relay during setup, leave it out of the server call mask. */
+    {
+        sigset_t sigset = server_block_set;
+        sigaddset( &sigset, SIGUSR2 );
+        pthread_sigmask( SIG_BLOCK, &sigset, NULL );
+    }
+#else
+    sigaddset( &server_block_set, SIGUSR2 );
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+#endif
 
     /* receive the first thread request fd on the main socket */
     data->request_fd = wine_server_receive_fd( &version );
@@ -1807,6 +1816,16 @@ void server_init_process_done(void)
      * is sent by init_process_done */
     signal_init_process( data->teb );
     init_teb_data( data );
+
+#ifdef __OpenBSD__
+    /* Enable the relay after setting up shared array and signal handlers. */
+    {
+        sigset_t sigset;
+        sigemptyset( &sigset );
+        sigaddset( &sigset, SIGUSR2 );
+        pthread_sigmask( SIG_UNBLOCK, &sigset, NULL );
+    }
+#endif
 
     /* Signal the parent process to continue */
     SERVER_START_REQ( init_process_done )
