@@ -21,6 +21,7 @@
 #ifndef __WINE_SERVER_PROCESS_H
 #define __WINE_SERVER_PROCESS_H
 
+#include <stdint.h>
 #include "object.h"
 
 struct atom_table;
@@ -91,7 +92,7 @@ struct process
     struct list          kernel_object;   /* list of kernel object pointers */
     struct pe_image_info image_info;      /* main exe image info */
 #ifdef __OpenBSD__
-    int                 *signal_targets   /* tids of pending signal targets for cross-process communication */
+    uint64_t            *signal_targets;  /* pending (signal, Unix tid) pairs */
 #endif
 };
 
