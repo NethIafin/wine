@@ -53,6 +53,7 @@
 
 #include "file.h"
 #include "process.h"
+#include "sig_openbsd.h"
 #include "thread.h"
 
 #ifdef USE_PTRACE
@@ -261,10 +262,10 @@ int send_thread_signal( struct thread *thread, int sig )
     {
         ret = tkill( thread->unix_pid, thread->unix_tid, sig );
 #ifdef __OpenBSD__
-        if (ret == -1 && errno == ENOSYS && sig != SIGQUIT)
+        if (ret == -1 && errno == ENOSYS)
         {
-            set_signal_target( thread );
-            ret = kill( thread->unix_pid, sig );
+            if (!set_signal_target( thread, sig )) return 0;
+            ret = kill( thread->unix_pid, SIGUSR2 );
         }
 #else
         if (ret == -1 && errno == ENOSYS) ret = kill( thread->unix_pid, sig );
