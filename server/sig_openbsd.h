@@ -36,8 +36,8 @@ extern void init_process_signal_targets( struct process *process );
 /* clean up signals on finish process tracing */
 extern void finish_process_signal_targets( struct process *process );
 
-/* record the target thread before we signal their process */
-extern void set_signal_target( struct thread *thread );
+/* Publish a target and signal; return zero if the request was dropped. */
+extern int set_signal_target( struct thread *thread, int sig );
 
 
 #endif /* __OpenBSD__ */

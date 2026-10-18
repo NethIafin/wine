@@ -27,6 +27,9 @@
 #ifdef __OpenBSD__
 
 #include <fcntl.h>
+#include <errno.h>
+#include <signal.h>
+#include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,8 +53,11 @@ static int signal_tids[MAX_SIGNAL_TIDS];
 
 /* the array shared with the server. Has to match server */
 #define SIGNAL_TARGETS_COUNT 64
-#define SIGNAL_TARGETS_SIZE (SIGNAL_TARGETS_COUNT * sizeof(int))
-static int *signal_targets;
+#define SIGNAL_TARGETS_SIZE (SIGNAL_TARGETS_COUNT * sizeof(uint64_t))
+static uint64_t *signal_targets;
+
+/* Requests are shared across processes and accessed from a signal handler; atomics must be lock-free. */
+C_ASSERT( __atomic_always_lock_free( sizeof(uint64_t), 0 ) );
 
 void add_signal_tid( int tid )
 {
@@ -86,37 +92,33 @@ BOOL is_signal_thread(void)
     return FALSE;
 }
 
-BOOL forward_thread_signal( int sig )
+void forward_thread_signal(void)
 {
-    int tid;
-    unsigned int i;
-    BOOL for_self = FALSE;
-    int self = getthrid();
-
-    if (signal_targets && !__atomic_exchange_n( &signal_targets[0], 0, __ATOMIC_SEQ_CST ))
-    {
-        for (i = 1; i < SIGNAL_TARGETS_COUNT; i++)
-        {
-            if (!__atomic_load_n( &signal_targets[i], __ATOMIC_SEQ_CST )) continue;
-            /* another thread draining the array? */
-            if (!(tid = __atomic_exchange_n( &signal_targets[i], 0, __ATOMIC_SEQ_CST ))) continue;
-            if (tid == self) for_self = TRUE;
-            else thrkill( tid, sig, NULL );
-        }
-        return for_self;
-    }
-
-    /* handle overflows and global sends */
+    /* SIGUSR2 interrupts arbitrary code: thrkill() must
+     * not replace the interrupted thread's errno, even when no target exists. */
+    int saved_errno = errno;
+    unsigned int i, j;
 
     if (signal_targets)
-        for (i = 1; i < SIGNAL_TARGETS_COUNT; i++)
-            __atomic_store_n( &signal_targets[i], 0, __ATOMIC_SEQ_CST );
+    {
+        for (i = 0; i < SIGNAL_TARGETS_COUNT; i++)
+        {
+            uint64_t request = __atomic_exchange_n( &signal_targets[i], 0, __ATOMIC_SEQ_CST );
+            int tid = (uint32_t)request;
+            unsigned int sig = request >> 32;
 
-    for (i = 0; i < MAX_SIGNAL_TIDS; i++)
-        if ((tid = __atomic_load_n( &signal_tids[i], __ATOMIC_SEQ_CST )) && tid != self)
+            if (!request) continue;
+            if (sig != SIGINT && sig != SIGUSR1 && sig != SIGQUIT) continue;
+            for (j = 0; j < MAX_SIGNAL_TIDS; j++)
+                if (tid > 0 && __atomic_load_n( &signal_tids[j], __ATOMIC_SEQ_CST ) == tid) break;
+            if (j == MAX_SIGNAL_TIDS) continue;
+
+            /* Relayed signals are masked in the SIGUSR2 handler. A self-directed
+             * request is delivered after the entire array has been drained. */
             thrkill( tid, sig, NULL );
-
-    return TRUE;
+        }
+    }
+    errno = saved_errno;
 }
 
 void init_signal_targets( const char *server_dir, unsigned int process_id )
