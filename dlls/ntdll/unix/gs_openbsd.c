@@ -519,7 +519,7 @@ static BOOL decode_gs_insn( struct gs_insn *insn, const BYTE *bytes, unsigned in
  * 4. Everything else - we will pay a full SIGSEGV trip here every time. We want so that most cases are handled before this one
  *
  *
- * Stubs do not use the stack and scratch register is saved in the TLS's second qword.
+ * Stubs do not use the stack; scratch registers are saved in TLS's second and, if needed, third qwords.
  * This means %rsp is the same inside of a stub as at the site. This also means that we can safely leave stub either to before jump
  * or after jump, depending on where exactly we stopped.
  */
@@ -560,7 +560,7 @@ struct gs_stub
     BYTE  kind;                     /* of type enum gs_stub_kind */
     BYTE  lea_len;                  /* for stub pair - length of the lea */
     BYTE  lea[GS_LEA_MAX];          /* original bytes of the lea command */
-    BYTE  two_scratch;              /* uses two scratch bytes - needed for gs_leave_stub */
+    BYTE  two_scratch;              /* uses two scratch registers - needed for gs_leave_stub */
 };
 
 C_ASSERT( sizeof(struct gs_stub) == CODE_STUB_SLOT_SIZE );
@@ -703,7 +703,7 @@ static void build_gs_stub( struct gs_stub *stub, BYTE *site, const struct gs_ins
         if (insn->opcode >= 0x100) *p++ = insn->bytes[insn->opcode_pos + 1];
         *p++ = MODRM( 2, insn->ext, MODRM_RM_SIB );
     }
-    /* two-scratch case - base S, disp 0, 32 bit addr [s1+s2] */
+    /* two-scratch case - 64 bit addr [s1+s2], s2 is a zero-extended 32 bit offset */
     if (stub->two_scratch) *p++ = SIB( 0, s2, s1 );
     /* SIB: base S, and then original index and scale */
     else if (insn->index != -1) *p++ = SIB( insn->scale, insn->index, s1 );
