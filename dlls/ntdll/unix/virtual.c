@@ -3312,20 +3312,6 @@ void virtual_init(void)
     assert( pages_vprot != MAP_FAILED );
     view_block_start = anon_mmap_alloc( view_block_size, PROT_READ | PROT_WRITE );
     view_block_end = view_block_start + view_block_size / sizeof(*view_block_start);
-    free_ranges = anon_mmap_alloc( view_block_size, PROT_READ | PROT_WRITE );
-#if defined(__OpenBSD__)
-    pages_vprot = anon_mmap_alloc( ROUND_SIZE( 0, pages_vprot_size * sizeof(*pages_vprot), host_page_mask ),
-        PROT_READ | PROT_WRITE );
-#else
-    pages_vprot = anon_mmap_alloc( pages_vprot_size * sizeof(*pages_vprot), PROT_READ | PROT_WRITE );
-#endif
-#else
-    /* try to find space in a reserved area for the views and pages protection table */
-    view_block_start = alloc_virtual_heap( 2 * view_block_size + (1U << (32 - page_shift)) );
-    view_block_end = view_block_start + view_block_size / sizeof(*view_block_start);
-    free_ranges = (void *)((char *)view_block_start + view_block_size);
-    pages_vprot = (void *)((char *)view_block_start + 2 * view_block_size);
-#endif
     assert( view_block_start != MAP_FAILED );
     wine_rb_init( &views_tree, compare_view );
     kernel_writewatch_init();
