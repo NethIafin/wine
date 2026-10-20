@@ -952,6 +952,7 @@ static const char * const CRYPT_knownLocations[] = {
  "/usr/local/share/certs/",
  "/etc/sfw/openssl/certs",
  "/etc/security/cacerts",  /* Android */
+ "/etc/ssl/cert.pem",      /* OpenBSD */
 };
 
 static void load_root_certs(void)
