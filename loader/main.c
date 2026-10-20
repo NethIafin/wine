@@ -126,6 +126,12 @@ static const char *get_self_exe(void)
 {
 #if defined(__linux__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__)
     return "/proc/self/exe";
+#elif defined(__OpenBSD__)
+    size_t path_size = PATH_MAX;
+    char *path = malloc( path_size );
+    if (path && getexecpath(path, path_size) == 0)
+        return path;
+    free( path );
 #elif defined (__FreeBSD__) || defined(__DragonFly__)
     static int pathname[] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 };
     size_t path_size = PATH_MAX;
