@@ -813,7 +813,7 @@ static char *parse_mount_entries( FILE *f, dev_t dev, ino_t ino )
 }
 #endif
 
-#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__DragonFly__)
+#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__DragonFly__) || defined(__OpenBSD__)
 #include <fstab.h>
 static char *parse_mount_entries( FILE *f, dev_t dev, ino_t ino )
 {
@@ -918,7 +918,7 @@ static char *get_default_drive_device( const char *root )
     if (device) ret = strdup( device );
     mutex_unlock( &mnt_mutex );
 
-#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__ ) || defined(__DragonFly__)
+#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__ ) || defined(__DragonFly__) || defined(__OpenBSD__)
     char *device = NULL;
     int fd, res = -1;
     struct stat st;
@@ -1671,6 +1671,23 @@ static BOOL fd_is_mount_point( int fd, const struct stat *st )
 
 
 static unsigned int server_get_unix_name( HANDLE handle, char **unix_name );
+
+#ifdef __OpenBSD__
+static int read_symlink_reparse( int fd, void *buffer, size_t size )
+{
+    struct stat st;
+    ssize_t ret;
+
+    if (fstat( fd, &st ) == -1) return -1;
+    if (!S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > size) goto invalid;
+    do ret = pread( fd, buffer, size, 0 ); while (ret == -1 && errno == EINTR);
+    if (ret == -1) return -1;
+    if (ret == st.st_size) return ret;
+invalid:
+    errno = EINVAL;
+    return -1;
+}
+#endif
 
 #ifdef __OpenBSD__
 static int read_symlink_reparse( int fd, void *buffer, size_t size )

@@ -1400,6 +1400,22 @@ static void sock_poll_event( struct fd *fd, int event )
 
     if (event & (POLLERR | POLLHUP))
         error = sock_error( sock, &event );
+#ifdef __OpenBSD__
+    else if (sock->state == SOCK_CONNECTING && (event & POLLOUT))
+    {
+        socklen_t len = sizeof(error);
+
+        /* connect(2): check SO_ERROR on write readiness; kqueue(2) can
+         * report socket errors without EV_EOF. A successful retry may
+         * still have a cached error from the previous attempt. */
+        getsockopt( get_unix_fd(fd), SOL_SOCKET, SO_ERROR, &error, &len );
+        if (error)
+        {
+            sock->errors[AFD_POLL_BIT_CONNECT_ERR] = error;
+            event |= POLLERR;
+        }
+    }
+#endif
 
     switch (sock->state)
     {
