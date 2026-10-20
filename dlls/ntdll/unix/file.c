@@ -1389,6 +1389,23 @@ invalid:
 }
 #endif
 
+#ifdef __OpenBSD__
+static int read_symlink_reparse( int fd, void *buffer, size_t size )
+{
+    struct stat st;
+    ssize_t ret;
+
+    if (fstat( fd, &st ) == -1) return -1;
+    if (!S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > size) goto invalid;
+    do ret = pread( fd, buffer, size, 0 ); while (ret == -1 && errno == EINTR);
+    if (ret == -1) return -1;
+    if (ret == st.st_size) return ret;
+invalid:
+    errno = EINVAL;
+    return -1;
+}
+#endif
+
 
 /* get the stat info and file attributes for a file (by file descriptor) */
 static int fd_get_file_info( HANDLE handle, int fd, unsigned int options,

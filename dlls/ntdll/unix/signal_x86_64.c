@@ -29,6 +29,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <signal.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -267,6 +268,44 @@ __ASM_GLOBAL_FUNC( modify_ldt,
 #define ERROR_sig(context)  ((context)->uc_mcontext.__gregs[_REG_ERR])
 #define FPU_sig(context)    ((void *)((context)->uc_mcontext.__fpregs))
 #define XState_sig(context) NULL
+
+#elif defined(__OpenBSD__)
+
+#include <machine/trap.h>
+
+/* OpenBSD names T_MCHK and T_XMMFLT differently */
+#define T_MCHK      T_MCA
+#define T_XMMFLT    T_XMM
+
+/* Pretty much same as FreeBSD but context has registers directly there */
+#define RAX_sig(context)     ((context)->sc_rax)
+#define RBX_sig(context)     ((context)->sc_rbx)
+#define RCX_sig(context)     ((context)->sc_rcx)
+#define RDX_sig(context)     ((context)->sc_rdx)
+#define RSI_sig(context)     ((context)->sc_rsi)
+#define RDI_sig(context)     ((context)->sc_rdi)
+#define RBP_sig(context)     ((context)->sc_rbp)
+#define R8_sig(context)      ((context)->sc_r8)
+#define R9_sig(context)      ((context)->sc_r9)
+#define R10_sig(context)     ((context)->sc_r10)
+#define R11_sig(context)     ((context)->sc_r11)
+#define R12_sig(context)     ((context)->sc_r12)
+#define R13_sig(context)     ((context)->sc_r13)
+#define R14_sig(context)     ((context)->sc_r14)
+#define R15_sig(context)     ((context)->sc_r15)
+#define CS_sig(context)      ((context)->sc_cs)
+#define DS_sig(context)      ((context)->sc_ds)
+#define ES_sig(context)      ((context)->sc_es)
+#define FS_sig(context)      ((context)->sc_fs)
+#define GS_sig(context)      ((context)->sc_gs)
+#define SS_sig(context)      ((context)->sc_ss)
+#define EFL_sig(context)     ((context)->sc_rflags)
+#define RIP_sig(context)     ((context)->sc_rip)
+#define RSP_sig(context)     ((context)->sc_rsp)
+#define TRAP_sig(context)    ((context)->sc_trapno)
+#define ERROR_sig(context)   ((context)->sc_err)
+#define FPU_sig(context)     ((void *)((context)->sc_fpstate))
+#define XState_sig(context)  NULL
 
 #elif defined(__OpenBSD__)
 
@@ -815,6 +854,63 @@ __ASM_GLOBAL_FUNC( clear_alignment_flag,
                    "popfq\n\t"
                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
                    "ret" )
+
+#ifdef __OpenBSD__
+/***********************************************************************
+ *           is_breakpoint_trap
+ *
+ * OpenBSD reports int3 and single-step traps alike.
+ */
+static BOOL is_breakpoint_trap( ucontext_t *sigcontext)
+{
+    const BYTE *ip = (const BYTE *)RIP_sig(sigcontext);
+
+    if (EFL_sig(sigcontext) & 0x100) return FALSE;
+    /* not in a view - then can only be a breakpoint */
+    if (!virtual_is_readable_page( ip - 1 )) return TRUE;
+    if (ip[-1] == 0xcc) return TRUE; /* int3 */
+    return virtual_is_readable_page( ip - 2 ) && ip[-2] == 0xcd && ip[-1] == 0x03; /* int $3 */
+}
+
+/***********************************************************************
+ *           init_handler
+ * OpenBSD always zeroes sc_trapno and sc_err, we will rebuild them from the siginfo
+ */
+static void fixup_sigcontext( siginfo_t *siginfo, ucontext_t *sigcontext )
+{
+    TRAP_sig(sigcontext) = siginfo->si_trapno;
+    ERROR_sig(sigcontext) = 0;
+    if (siginfo->si_signo == SIGTRAP)
+    {
+        TRAP_sig(sigcontext) = is_breakpoint_trap( sigcontext ) ? T_BPTFLT : T_TRCTRAP;
+        return;
+    }
+
+    if (siginfo->si_trapno == T_PROTFLT)
+    {
+        /* an int $n without a user gate faults with error code of an IDT selector */
+        const BYTE *ip = (const BYTE *)RIP_sig(sigcontext);
+
+        if (virtual_is_readable_page( ip ) && virtual_is_readable_page( ip + 1 ) && ip[0] == 0xcd)
+            ERROR_sig(sigcontext) = (ip[1] << 3 ) | 2;
+        return;
+    }
+
+    if (siginfo->si_signo != SIGSEGV || siginfo->si_trapno != T_PAGEFLT) return;
+
+    /* Error Code for page fault - user mode, protection violation, write, instruction fetch */
+    ERROR_sig(sigcontext) = 0x04;
+    if (siginfo->si_code == SEGV_ACCERR) ERROR_sig(sigcontext) |= 0x01;
+
+    /* instuction fetch? next page instruction fetch? */
+    if ((ULONG_PTR)siginfo->si_addr - RIP_sig(sigcontext) < 16) ERROR_sig(sigcontext) |= 0x10;
+
+    /* a read can only fail with SEV_ACCERR on an unreadable page */
+    else if (siginfo->si_code == SEGV_ACCERR && virtual_is_readable_page( siginfo->si_addr ))
+        ERROR_sig(sigcontext) |= 0x02;
+}
+
+#endif /* __OpenBSD__ */
 
 #ifdef __OpenBSD__
 /***********************************************************************
@@ -2220,6 +2316,21 @@ static BOOL handle_syscall_fault( struct thread_data *data, ucontext_t *sigconte
     return FALSE;
 }
 
+/***********************************************************************
+ *           handle_gs_fault
+ *
+ * OpenBSD can't point %gs at the TEB
+ */
+#if defined(__OpenBSD__)
+static BOOL handle_gs_fault( struct thread_data *data, ucontext_t *ucontext, ULONG_PTR fault_addr )
+{
+    if (!data->teb) return FALSE;
+    if (CS_sig(ucontext) != cs64_sel) return FALSE;
+    if (((ERROR_sig(ucontext) >> 1) & 0x09) == EXCEPTION_EXECUTE_FAULT) return FALSE;
+    return gs_handle_fault( ucontext, fault_addr );
+}
+#endif
+
 
 /***********************************************************************
  *           handle_syscall_trap
@@ -2399,6 +2510,11 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     if (gs_leave_stub( sigcontext )) rec.ExceptionAddress = (void *)RIP_sig(sigcontext);
 #endif
 
+#ifdef __OpenBSD__
+    fixup_sigcontext( siginfo, sigcontext );
+    if (gs_leave_stub( sigcontext )) rec.ExceptionAddress = (void *)RIP_sig(sigcontext);
+#endif
+
     save_context( data, &context, sigcontext );
 
     switch(TRAP_sig(sigcontext))
@@ -2498,7 +2614,15 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     fixup_sigcontext( siginfo, sigcontext );
 #endif
 
+#ifdef __OpenBSD__
+    fixup_sigcontext( siginfo, sigcontext );
+#endif
+
     if (handle_syscall_trap( data, sigcontext, siginfo )) return;
+
+#ifdef __OpenBSD__
+    fixup_sigcontext( siginfo, sigcontext );
+#endif
 
     save_context( data, &context, sigcontext );
 
@@ -2549,6 +2673,11 @@ static void fpe_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     fixup_sigcontext( siginfo, sigcontext );
 #endif
 
+#ifdef __OpenBSD__
+    /* XXX Unreachable while the SIGABRT handler is disabled on OpenBSD. */
+    /* abort() blocks SIGSEGV, but Windows exception dispatch needs it for GS emulation. */
+    sigcontext->sc_mask &= ~sigmask(SIGSEGV);
+#endif
     save_context( data, &context, sigcontext );
 
     switch (siginfo->si_code)
@@ -2765,6 +2894,20 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
         restore_context( data, &context, sigcontext );
     }
 }
+
+
+#ifdef __OpenBSD__
+/**********************************************************************
+ *		usr2_handler
+ *
+ * Handler for SIGUSR2, used to relay queued server signals.
+ */
+static void usr2_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+{
+    /* The relay can run on native threads without Wine thread data. */
+    forward_thread_signal();
+}
+#endif
 
 
 #ifdef __OpenBSD__

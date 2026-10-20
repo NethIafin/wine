@@ -885,7 +885,14 @@ bool vkd3d_get_program_name(char program_name[PATH_MAX])
 
     if ((name = strrchr(program_invocation_name, '/')))
     {
+#ifdef __OpenBSD__
+        char path[PATH_MAX];
+        if (getexecpath(path, sizeof(path)) == 0)
+            /* OpenBSD's getexecpath returns path canonicalized same as realpath(3) */
+            real_path = path;
+#else
         real_path = realpath("/proc/self/exe", NULL);
+#endif
 
         /* Try to strip command line arguments. */
         if (real_path && (p = strrchr(real_path, '/'))
