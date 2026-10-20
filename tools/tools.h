@@ -780,6 +780,14 @@ static inline char *get_bindir( const char *argv0 )
 #if defined(__linux__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__) \
         || defined(__CYGWIN__) || defined(__MSYS__)
     dir = realpath( "/proc/self/exe", NULL );
+#elif defined (__OpenBSD__)
+    size_t path_size = PATH_MAX;
+    char *path = xmalloc( path_size );
+    if (getexecpath(path, path_size) == 0)
+        dir = path;
+    else
+        free( path );
+    /* No realpath(3) is needed: getexecpath(3) returns a canonical path. */
 #elif defined (__FreeBSD__) || defined(__DragonFly__)
     static int pathname[] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 };
     size_t path_size = PATH_MAX;
