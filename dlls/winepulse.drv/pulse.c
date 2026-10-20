@@ -169,6 +169,7 @@ static void free_phys_device_lists(void)
             free(dev->name);
             free(dev);
         }
+        list_init(*list);
     } while (*(++list));
 }
 
