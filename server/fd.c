@@ -591,7 +591,15 @@ static inline void set_fd_epoll_events( struct fd *fd, int user, int events )
     if (kqueue_fd == -1) return;
 
     EV_SET( &ev[0], fd->unix_fd, EVFILT_READ, 0, NOTE_LOWAT, 1, (void *)(long)user );
+#ifdef __OpenBSD__
+    /* kqueue(2): use the socket's SO_SNDLOWAT for write readiness.
+     * NOTE_LOWAT=1 can report writable while sendmsg() still returns
+     * EWOULDBLOCK (see getsockopt(2)), causing endless async send retries
+     * if the peer does not drain its receive buffer. */
+    EV_SET( &ev[1], fd->unix_fd, EVFILT_WRITE, 0, 0, 0, (void *)(long)user );
+#else
     EV_SET( &ev[1], fd->unix_fd, EVFILT_WRITE, 0, NOTE_LOWAT, 1, (void *)(long)user );
+#endif
 
     if (events == -1)  /* stop waiting on this fd completely */
     {
@@ -2341,6 +2349,7 @@ static void unmount_device( dev_t dev )
 
 #define XATTR_REPARSE XATTR_USER_PREFIX "WINEREPARSE"
 
+#ifndef __OpenBSD__
 static int xattr_fset( int filedes, const char *name, const void *value, size_t size )
 {
 #ifdef HAVE_SYS_XATTR_H
@@ -2390,12 +2399,18 @@ static int xattr_fremove( int filedes, const char *name )
     return -1;
 #endif
 }
+#endif
 
 static void set_reparse_point( struct fd *fd, struct async *async )
 {
     char *reparse_name;
     struct stat st;
     size_t len;
+#ifdef __OpenBSD__
+    const REPARSE_DATA_BUFFER *data = get_req_data();
+    size_t offset = 0, size = get_req_data_size();
+    ssize_t written;
+#endif
 
     if (!fd->unix_name)
     {
@@ -2415,7 +2430,39 @@ static void set_reparse_point( struct fd *fd, struct async *async )
         return;
     }
 
+#ifdef __OpenBSD__
+    if (!S_ISREG(st.st_mode))
+    {
+        set_error( STATUS_NOT_SUPPORTED );
+        return;
+    }
+    if (size < sizeof(*data) || size > MAXIMUM_REPARSE_DATA_BUFFER_SIZE ||
+        (fd->unix_name[strlen(fd->unix_name) - 1] != '?' && st.st_size))
+    {
+        set_error( STATUS_IO_REPARSE_DATA_INVALID );
+        return;
+    }
+    if (data->ReparseTag != IO_REPARSE_TAG_SYMLINK)
+    {
+        set_error( STATUS_NOT_SUPPORTED );
+        return;
+    }
+    while (offset < size)
+    {
+        written = pwrite( fd->unix_fd, (const char *)get_req_data() + offset, size - offset, offset );
+        if (written == -1 && errno == EINTR) continue;
+        if (written <= 0)
+        {
+            if (!written) errno = EIO;
+            file_set_error();
+            return;
+        }
+        offset += written;
+    }
+    if (ftruncate( fd->unix_fd, size ) == -1)
+#else
     if (xattr_fset( fd->unix_fd, XATTR_REPARSE, get_req_data(), get_req_data_size() ) < 0)
+#endif
     {
         file_set_error();
         return;
@@ -2447,6 +2494,9 @@ static void get_reparse_point( struct fd *fd, struct async *async )
      * Linux won't return any data if the size is too small */
     char buffer[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
     int ret;
+#ifdef __OpenBSD__
+    struct stat st;
+#endif
 
     if (!fd->unix_name)
     {
@@ -2472,7 +2522,31 @@ static void get_reparse_point( struct fd *fd, struct async *async )
         return;
     }
 
+#ifdef __OpenBSD__
+    if (fstat( fd->unix_fd, &st ) == -1)
+    {
+        file_set_error();
+        return;
+    }
+    if (!S_ISREG(st.st_mode))
+    {
+        set_error( STATUS_NOT_SUPPORTED );
+        return;
+    }
+    if (st.st_size < sizeof(REPARSE_DATA_BUFFER) || st.st_size > sizeof(buffer))
+    {
+        set_error( STATUS_IO_REPARSE_DATA_INVALID );
+        return;
+    }
+    do ret = pread( fd->unix_fd, buffer, sizeof(buffer), 0 ); while (ret == -1 && errno == EINTR);
+    if (ret >= 0 && ret != st.st_size)
+    {
+        set_error( STATUS_IO_REPARSE_DATA_INVALID );
+        return;
+    }
+#else
     ret = xattr_fget( fd->unix_fd, XATTR_REPARSE, buffer, sizeof(buffer) );
+#endif
     if (ret >= 0)
     {
         if (ret > get_reply_max_size())
@@ -2527,6 +2601,20 @@ static void delete_reparse_point( struct fd *fd, struct async *async )
     memcpy( base_name, fd->unix_name, len - 1 );
     base_name[len - 1] = 0;
 
+#ifdef __OpenBSD__
+    if (data->ReparseTag != IO_REPARSE_TAG_SYMLINK)
+    {
+        set_error( STATUS_IO_REPARSE_TAG_MISMATCH );
+        free( base_name );
+        return;
+    }
+    if (ftruncate( fd->unix_fd, 0 ) == -1)
+    {
+        file_set_error();
+        free( base_name );
+        return;
+    }
+#endif
     if (rename( fd->unix_name, base_name ) < 0)
     {
         file_set_error();
@@ -2537,7 +2625,9 @@ static void delete_reparse_point( struct fd *fd, struct async *async )
     free( fd->unix_name );
     fd->closed->unix_name = fd->unix_name = base_name;
 
+#ifndef __OpenBSD__
     xattr_fremove( fd->unix_fd, XATTR_REPARSE );
+#endif
 }
 
 /* default get_file_info() routine */

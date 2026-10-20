@@ -1816,6 +1816,9 @@ NTSTATUS WINAPI NtSetInformationProcess( HANDLE handle, PROCESSINFOCLASS class, 
                                        MEM_RESERVE, PAGE_READWRITE );
         if (!ret)
         {
+#ifdef __OpenBSD__
+            virtual_set_stack_mapping( addr, reserve );
+#endif
 #ifdef VALGRIND_STACK_REGISTER
             VALGRIND_STACK_REGISTER( addr, (char *)addr + reserve );
 #endif

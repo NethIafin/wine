@@ -1741,6 +1741,10 @@ DECL_HANDLER(init_first_thread)
     current->unix_pid = process->unix_pid = req->unix_pid;
     current->unix_tid = req->unix_tid;
 
+#ifdef __OpenBSD__
+    init_process_signal_targets( process );
+#endif
+
     if (!process->parent_id)
         process->affinity = current->affinity = get_thread_affinity( current );
     else
@@ -2135,6 +2139,26 @@ DECL_HANDLER(queue_apc)
             }
         }
         break;
+#ifdef __OpenBSD__
+    case APC_COPY_MEMORY:
+        unsigned int access = apc->call.copy_memory.write ? PROCESS_VM_WRITE : PROCESS_VM_READ;
+        process = get_process_from_handle( req->handle, access);
+
+        if (process && process != current->process)
+        {
+            /* duplicate the shared section handle into the target process */
+            obj_handle_t handle = duplicate_handle( current->process, apc->call.copy_memory.handle,
+                                                    process, 0, 0, DUPLICATE_SAME_ACCESS);
+
+            if (handle) apc->call.copy_memory.handle = handle;
+            else
+            {
+                release_object( process );
+                process = NULL;
+            }
+        }
+        break;
+#endif
     default:
         set_error( STATUS_INVALID_PARAMETER );
         break;
