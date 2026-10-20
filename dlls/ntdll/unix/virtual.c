@@ -4788,8 +4788,13 @@ ssize_t virtual_locked_read( int fd, void *addr, size_t size )
     BOOL has_write_watch = FALSE;
     int err = EFAULT;
 
+    /* OpenBSD read(2) can consume data on EFAULT; check write access first. */
+#ifdef __OpenBSD__
+    ssize_t ret = -1;
+#else
     ssize_t ret = read( fd, addr, size );
     if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
+#endif
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     if (!check_write_access( addr, size, &has_write_watch ))
@@ -4839,8 +4844,13 @@ ssize_t virtual_locked_recvmsg( int fd, struct msghdr *hdr, int flags )
     BOOL has_write_watch = FALSE;
     int err = EFAULT;
 
+    /* OpenBSD recvmsg(2) can consume data on EFAULT; check write access first. */
+#ifdef __OpenBSD__
+    ssize_t ret = -1;
+#else
     ssize_t ret = recvmsg( fd, hdr, flags );
     if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
+#endif
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     for (i = 0; i < hdr->msg_iovlen; i++)

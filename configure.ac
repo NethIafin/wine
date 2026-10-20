@@ -1729,8 +1729,6 @@ then
     fi
     WINE_NOTICE_WITH(gettextpo,[test "x$GETTEXTPO_LIBS" = "x"],
       [GetText ${notice_platform}development files not found (or too old), po files can't be rebuilt.])
-    WINE_NOTICE_WITH(gettextpo,[test "$srcdir" != .],
-      [Rebuilding po files is not supported for out of tree builds.])
 fi
 
 dnl **** Check for PulseAudio ****
