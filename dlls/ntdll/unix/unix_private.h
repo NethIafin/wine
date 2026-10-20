@@ -268,6 +268,7 @@ extern void process_exit_wrapper( int status ) DECLSPEC_NORETURN;
 extern void server_init_process( struct thread_data *data );
 extern void server_init_process_done(void);
 extern void server_init_thread( struct thread_data *data );
+extern void virtual_set_stack_mapping( void *start, SIZE_T size );
 extern int server_pipe( int fd[2] );
 
 extern void fpux_to_fpu( I386_FLOATING_SAVE_AREA *fpu, const XSAVE_FORMAT *fpux );

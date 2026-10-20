@@ -55,6 +55,9 @@
 #ifdef HAVE_SYS_USER_H
 # include <sys/user.h>
 #endif
+#ifdef __OpenBSD__
+# include <machine/vmparam.h>
+#endif
 #ifdef HAVE_LIBPROCSTAT_H
 # include <libprocstat.h>
 #endif
@@ -555,6 +558,9 @@ static void *anon_mmap_tryfixed( void *start, size_t size, int prot, int flags )
 
 #ifdef MAP_FIXED_NOREPLACE
     ptr = mmap( start, size, prot, MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANON | flags, -1, 0 );
+#elif defined(__OpenBSD__) /* OpenBSD defines MAP_TRYFIXED as 0, so be careful if you want to move it down */
+    ptr = mmap( start, size, prot, MAP_FIXED | __MAP_NOREPLACE | MAP_PRIVATE | MAP_ANON | flags, -1, 0 );
+    if (ptr == MAP_FAILED && errno == ENOMEM) errno = EEXIST;
 #elif defined(MAP_TRYFIXED)
     ptr = mmap( start, size, prot, MAP_TRYFIXED | MAP_PRIVATE | MAP_ANON | flags, -1, 0 );
 #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
@@ -2366,6 +2372,11 @@ static void *get_host_addr_space_limit(void)
 #ifdef __APPLE__
     /* See MACH_VM_MAX_ADDRESS_RAW in xnu osfmk/mach/arm/vm_param.h */
     return (void *)0x7ffffe000000;
+
+#elif defined(__OpenBSD__)
+    /* mmap() will ingore address hints, so the probing below doesn't work */
+    return (void *)(VM_MAXUSER_ADDRESS & ~(UINT_PTR)granularity_mask);
+
 #elif defined _WIN64
     UINT_PTR addr = (UINT_PTR)1 << 63;
 
@@ -3301,6 +3312,20 @@ void virtual_init(void)
     assert( pages_vprot != MAP_FAILED );
     view_block_start = anon_mmap_alloc( view_block_size, PROT_READ | PROT_WRITE );
     view_block_end = view_block_start + view_block_size / sizeof(*view_block_start);
+    free_ranges = anon_mmap_alloc( view_block_size, PROT_READ | PROT_WRITE );
+#if defined(__OpenBSD__)
+    pages_vprot = anon_mmap_alloc( ROUND_SIZE( 0, pages_vprot_size * sizeof(*pages_vprot), host_page_mask ),
+        PROT_READ | PROT_WRITE );
+#else
+    pages_vprot = anon_mmap_alloc( pages_vprot_size * sizeof(*pages_vprot), PROT_READ | PROT_WRITE );
+#endif
+#else
+    /* try to find space in a reserved area for the views and pages protection table */
+    view_block_start = alloc_virtual_heap( 2 * view_block_size + (1U << (32 - page_shift)) );
+    view_block_end = view_block_start + view_block_size / sizeof(*view_block_start);
+    free_ranges = (void *)((char *)view_block_start + view_block_size);
+    pages_vprot = (void *)((char *)view_block_start + 2 * view_block_size);
+#endif
     assert( view_block_start != MAP_FAILED );
     wine_rb_init( &views_tree, compare_view );
     kernel_writewatch_init();
@@ -3686,7 +3711,7 @@ static void set_large_address_space(void)
  * MAP_STACK mapping whenever we have a syscall or page fault.
  * This means that every stack we hand out must have that flag
  */
-static void set_stack_mapping( void *start, size_t size)
+static void set_stack_mapping( void *start, SIZE_T size)
 {
 #ifdef __OpenBSD__
     if (mmap( start, size, PROT_READ | PROT_WRITE,
@@ -3694,6 +3719,24 @@ static void set_stack_mapping( void *start, size_t size)
         ERR( "failed to map stack %p-%p: %s\n", start, (char *)start + size, strerror(errno) );
 #endif
 }
+
+#ifdef __OpenBSD__
+/***********************************************************************
+ *           virtual_set_stack_mapping
+ * Make a reserved range usabled as a stack.
+ * This is for stacks created with RtlCreateUserStack()
+ */
+void virtual_set_stack_mapping( void *start, SIZE_T size )
+{
+    sigset_t sigset;
+
+    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+    set_stack_mapping( start, size );
+    mprotect_range( start, size, 0, 0 );
+    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+}
+
+#endif
 
 
 /***********************************************************************
