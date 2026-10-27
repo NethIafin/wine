@@ -1281,7 +1281,17 @@ EXCEPTION_DISPOSITION WINAPI __C_specific_handler( EXCEPTION_RECORD *rec, void *
         {
             if (pc < base + table->ScopeRecord[i].BeginAddress) continue;
             if (pc >= base + table->ScopeRecord[i].EndAddress) continue;
-            if (table->ScopeRecord[i].JumpTarget) continue;
+            /* Stop at the selected __except scope during target unwind.
+             * Its landing pad may lie outside an enclosing __finally's
+             * recorded range even though that scope has not been exited.
+             */
+            if (table->ScopeRecord[i].JumpTarget)
+            {
+                if ((rec->ExceptionFlags & EXCEPTION_TARGET_UNWIND) &&
+                    dispatch->TargetIp == base + table->ScopeRecord[i].JumpTarget)
+                    break;
+                continue;
+            }
 
             if (rec->ExceptionFlags & EXCEPTION_TARGET_UNWIND &&
                 dispatch->TargetIp >= base + table->ScopeRecord[i].BeginAddress &&
