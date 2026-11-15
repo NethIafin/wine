@@ -1955,7 +1955,7 @@ static NTSTATUS get_full_size_info(int fd, FILE_FS_FULL_SIZE_INFORMATION *info) 
     struct stat st;
     ULONGLONG bsize;
 
-#if !defined(linux) || !defined(HAVE_FSTATFS)
+#if (!defined(linux) && !defined(__OpenBSD__)) || !defined(HAVE_FSTATFS)
     struct statvfs stfs;
 #else
     struct statfs stfs;
@@ -1969,7 +1969,7 @@ static NTSTATUS get_full_size_info(int fd, FILE_FS_FULL_SIZE_INFORMATION *info) 
     if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) return STATUS_INVALID_DEVICE_REQUEST;
 
     /* Linux's fstatvfs is buggy */
-#if !defined(linux) || !defined(HAVE_FSTATFS)
+#if (!defined(linux) && !defined(__OpenBSD__)) || !defined(HAVE_FSTATFS)
     if (fstatvfs( fd, &stfs ) < 0) return errno_to_status( errno );
     bsize = stfs.f_frsize;
 #else
@@ -1982,7 +1982,13 @@ static NTSTATUS get_full_size_info(int fd, FILE_FS_FULL_SIZE_INFORMATION *info) 
     if (important_free_bytes != -1) stfs.f_bavail = stfs.f_bfree = important_free_bytes / bsize;
 #endif
 
+#if defined(__OpenBSD__) && defined(HAVE_FSTATFS)
+    if (stfs.f_bavail < 0) stfs.f_bavail = 0;
+    /* FFS can also use 2048-byte fragments. */
+    if (!strcmp( stfs.f_fstypename, "cd9660" ) || !strcmp( stfs.f_fstypename, "udf" ))
+#else
     if (bsize == 2048)  /* assume CD-ROM */
+#endif
     {
         info->BytesPerSector = 2048;
         info->SectorsPerAllocationUnit = 1;
