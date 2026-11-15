@@ -1083,16 +1083,20 @@ static HRESULT pulse_stream_connect(struct pulse_stream *stream, const char *pul
     pa_stream_set_buffer_attr_callback(stream->stream, pulse_attr_update, stream);
     pa_stream_set_moved_callback(stream->stream, pulse_attr_update, stream);
 
-    /* PulseAudio will fill in correct values */
-    attr.minreq = attr.fragsize = period_bytes;
-    attr.tlength = period_bytes * 3;
 #ifdef __OpenBSD__
     /* Let PulseAudio sndio queue more than the app buffer. This is because OpenBSD's sndio pulls data in large bursts.*/
     attr.maxlength = -1;
+    /* 100Hz clock: buffer before playback to prevent crackle */
+    attr.minreq = -1;
+    attr.tlength = period_bytes * 6;
+    attr.prebuf = -1;
 #else
+    /* PulseAudio will fill in correct values */
+    attr.minreq = attr.fragsize = period_bytes;
+    attr.tlength = period_bytes * 3;
     attr.maxlength = stream->bufsize_frames * pa_frame_size(&stream->ss);
-#endif
     attr.prebuf = pa_frame_size(&stream->ss);
+#endif
     dump_attr(&attr);
 
     /* If specific device was requested, use it exactly */
