@@ -31,6 +31,9 @@
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#ifdef HAVE_SYS_MOUNT_H
+#include <sys/mount.h>
+#endif
 #ifdef HAVE_SYS_STATFS_H
 #include <sys/statfs.h>
 #endif
@@ -364,7 +367,7 @@ static NTSTATUS get_volume_size_info( void *args )
     NTSTATUS status;
     int fd = -1;
 
-#if !defined(linux) || !defined(HAVE_FSTATFS)
+#if (!defined(linux) && !defined(__OpenBSD__)) || !defined(HAVE_FSTATFS)
     struct statvfs stfs;
 #else
     struct statfs stfs;
@@ -396,7 +399,7 @@ static NTSTATUS get_volume_size_info( void *args )
     }
 
     /* Linux's fstatvfs is buggy */
-#if !defined(linux) || !defined(HAVE_FSTATFS)
+#if (!defined(linux) && !defined(__OpenBSD__)) || !defined(HAVE_FSTATFS)
     if (fstatvfs( fd, &stfs ) < 0)
     {
         status = errno_to_status( errno );
@@ -417,7 +420,13 @@ static NTSTATUS get_volume_size_info( void *args )
     if (important_free_bytes != -1) stfs.f_bavail = stfs.f_bfree = important_free_bytes / bsize;
 #endif
 
+#if defined(__OpenBSD__) && defined(HAVE_FSTATFS)
+    if (stfs.f_bavail < 0) stfs.f_bavail = 0;
+    /* FFS can also use 2048-byte fragments. */
+    if (!strcmp( stfs.f_fstypename, "cd9660" ) || !strcmp( stfs.f_fstypename, "udf" ))
+#else
     if (bsize == 2048)  /* assume CD-ROM */
+#endif
     {
         info->bytes_per_sector = 2048;
         info->sectors_per_allocation_unit = 1;
