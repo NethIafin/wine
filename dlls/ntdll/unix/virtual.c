@@ -2911,15 +2911,14 @@ static void free_pe_mapping_info( struct pe_mapping_info *info )
 static unsigned int get_mapping_info( HANDLE handle, ACCESS_MASK access, unsigned int *sec_flags,
                                       mem_size_t *full_size, struct pe_mapping_info **info_ret )
 {
-    struct pe_mapping_info *info;
-    SIZE_T total, size = 2048;
+    struct pe_mapping_info stack_info, *info = &stack_info;
+    SIZE_T total, size = sizeof(info->image);
     unsigned int status;
 
     *info_ret = NULL;
+    /* Start on the stack to avoid heap allocations for non-image mappings. */
     for (;;)
     {
-        if (!(info = malloc( offsetof(struct pe_mapping_info, image) + size ))) return STATUS_NO_MEMORY;
-
         SERVER_START_REQ( get_mapping_info )
         {
             req->handle = wine_server_obj_handle( handle );
@@ -2934,10 +2933,17 @@ static unsigned int get_mapping_info( HANDLE handle, ACCESS_MASK access, unsigne
             info->nt_name.Length = info->nt_name.MaximumLength = reply->name_len;
         }
         SERVER_END_REQ;
-        if (!status && total <= size) break;
-        free_pe_mapping_info( info );
+        if (!status && total <= size && info != &stack_info) break;
+        if (info == &stack_info)
+        {
+            if (info->shared_file) NtClose( info->shared_file );
+        }
+        else free_pe_mapping_info( info );
         if (status) return status;
+        if (!total) return STATUS_SUCCESS;
         size = total;
+        if (!(info = malloc( offsetof(struct pe_mapping_info, image) + size )))
+            return STATUS_NO_MEMORY;
     }
 
     if (total)
