@@ -1977,7 +1977,7 @@ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start
     {
         /* changes to the file are not guaranteed to be visible in read-only MAP_PRIVATE mappings,
          * but they are on Linux so we take advantage of it */
-#ifdef __linux__
+#if defined(__linux__) || defined(__OpenBSD__)
         flags |= MAP_PRIVATE;
 #else
         flags |= MAP_SHARED;
