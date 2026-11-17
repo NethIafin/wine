@@ -7094,7 +7094,66 @@ NTSTATUS WINAPI NtFlushProcessWriteBuffers(void)
     return STATUS_SUCCESS;
 }
 
-#else /* __linux__ */
+#elif defined(__OpenBSD__) && defined(__x86_64__)
+
+static pthread_mutex_t process_write_buffers_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void *process_write_buffers_page = NULL;
+
+/**********************************************************************
+ *           NtFlushProcessWriteBuffers  (NTDLL.@)
+ */
+NTSTATUS WINAPI NtFlushProcessWriteBuffers(void)
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    sigset_t sigset;
+
+    server_enter_uninterrupted_section( &process_write_buffers_mutex, &sigset );
+
+    if (!process_write_buffers_page)
+    {
+        void *page = anon_mmap_alloc( host_page_size, PROT_READ | PROT_WRITE );
+
+        if (page == MAP_FAILED)
+        {
+            ERR( "failed to allocate write-buffer barrier page: %s\n", strerror(errno) );
+            status = STATUS_NO_MEMORY;
+            goto done;
+        }
+        if (mlock( page, host_page_size ))
+        {
+            int error = errno;
+            munmap( page, host_page_size );
+            ERR( "failed to lock write-buffer barrier page: %s\n", strerror(error) );
+            status = STATUS_WORKING_SET_QUOTA;
+            goto done;
+        }
+        process_write_buffers_page = page;
+    }
+
+    if (mprotect( process_write_buffers_page, host_page_size, PROT_READ | PROT_WRITE ))
+    {
+        ERR( "failed to make write-buffer barrier page writable: %s\n", strerror(errno) );
+        status = STATUS_ACCESS_DENIED;
+        goto done;
+    }
+
+    /* Keep a dirty, resident PTE so reducing its permissions forces a synchronous
+     * TLB shootdown. The amd64 IPI handlers execute a locked instruction before
+     * acknowledging it, providing a memory barrier on the remote processors.
+     * Keeping the page readable also preserves its mlock across calls. */
+    InterlockedIncrement( (LONG *)process_write_buffers_page );
+    if (mprotect( process_write_buffers_page, host_page_size, PROT_READ ))
+    {
+        ERR( "failed to protect write-buffer barrier page: %s\n", strerror(errno) );
+        status = STATUS_ACCESS_DENIED;
+    }
+
+done:
+    server_leave_uninterrupted_section( &process_write_buffers_mutex, &sigset );
+    return status;
+}
+
+#else
 
 /**********************************************************************
  *           NtFlushProcessWriteBuffers  (NTDLL.@)
