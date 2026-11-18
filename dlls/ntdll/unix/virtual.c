@@ -1977,7 +1977,7 @@ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start
     {
         /* changes to the file are not guaranteed to be visible in read-only MAP_PRIVATE mappings,
          * but they are on Linux so we take advantage of it */
-#ifdef __linux__
+#if defined(__linux__) || defined(__OpenBSD__)
         flags |= MAP_PRIVATE;
 #else
         flags |= MAP_SHARED;
@@ -2911,15 +2911,14 @@ static void free_pe_mapping_info( struct pe_mapping_info *info )
 static unsigned int get_mapping_info( HANDLE handle, ACCESS_MASK access, unsigned int *sec_flags,
                                       mem_size_t *full_size, struct pe_mapping_info **info_ret )
 {
-    struct pe_mapping_info *info;
-    SIZE_T total, size = 2048;
+    struct pe_mapping_info stack_info, *info = &stack_info;
+    SIZE_T total, size = sizeof(info->image);
     unsigned int status;
 
     *info_ret = NULL;
+    /* Start on the stack to avoid heap allocations for non-image mappings. */
     for (;;)
     {
-        if (!(info = malloc( offsetof(struct pe_mapping_info, image) + size ))) return STATUS_NO_MEMORY;
-
         SERVER_START_REQ( get_mapping_info )
         {
             req->handle = wine_server_obj_handle( handle );
@@ -2934,10 +2933,17 @@ static unsigned int get_mapping_info( HANDLE handle, ACCESS_MASK access, unsigne
             info->nt_name.Length = info->nt_name.MaximumLength = reply->name_len;
         }
         SERVER_END_REQ;
-        if (!status && total <= size) break;
-        free_pe_mapping_info( info );
+        if (!status && total <= size && info != &stack_info) break;
+        if (info == &stack_info)
+        {
+            if (info->shared_file) NtClose( info->shared_file );
+        }
+        else free_pe_mapping_info( info );
         if (status) return status;
+        if (!total) return STATUS_SUCCESS;
         size = total;
+        if (!(info = malloc( offsetof(struct pe_mapping_info, image) + size )))
+            return STATUS_NO_MEMORY;
     }
 
     if (total)
@@ -3312,20 +3318,6 @@ void virtual_init(void)
     assert( pages_vprot != MAP_FAILED );
     view_block_start = anon_mmap_alloc( view_block_size, PROT_READ | PROT_WRITE );
     view_block_end = view_block_start + view_block_size / sizeof(*view_block_start);
-    free_ranges = anon_mmap_alloc( view_block_size, PROT_READ | PROT_WRITE );
-#if defined(__OpenBSD__)
-    pages_vprot = anon_mmap_alloc( ROUND_SIZE( 0, pages_vprot_size * sizeof(*pages_vprot), host_page_mask ),
-        PROT_READ | PROT_WRITE );
-#else
-    pages_vprot = anon_mmap_alloc( pages_vprot_size * sizeof(*pages_vprot), PROT_READ | PROT_WRITE );
-#endif
-#else
-    /* try to find space in a reserved area for the views and pages protection table */
-    view_block_start = alloc_virtual_heap( 2 * view_block_size + (1U << (32 - page_shift)) );
-    view_block_end = view_block_start + view_block_size / sizeof(*view_block_start);
-    free_ranges = (void *)((char *)view_block_start + view_block_size);
-    pages_vprot = (void *)((char *)view_block_start + 2 * view_block_size);
-#endif
     assert( view_block_start != MAP_FAILED );
     wine_rb_init( &views_tree, compare_view );
     kernel_writewatch_init();
@@ -7102,7 +7094,66 @@ NTSTATUS WINAPI NtFlushProcessWriteBuffers(void)
     return STATUS_SUCCESS;
 }
 
-#else /* __linux__ */
+#elif defined(__OpenBSD__) && defined(__x86_64__)
+
+static pthread_mutex_t process_write_buffers_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void *process_write_buffers_page = NULL;
+
+/**********************************************************************
+ *           NtFlushProcessWriteBuffers  (NTDLL.@)
+ */
+NTSTATUS WINAPI NtFlushProcessWriteBuffers(void)
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    sigset_t sigset;
+
+    server_enter_uninterrupted_section( &process_write_buffers_mutex, &sigset );
+
+    if (!process_write_buffers_page)
+    {
+        void *page = anon_mmap_alloc( host_page_size, PROT_READ | PROT_WRITE );
+
+        if (page == MAP_FAILED)
+        {
+            ERR( "failed to allocate write-buffer barrier page: %s\n", strerror(errno) );
+            status = STATUS_NO_MEMORY;
+            goto done;
+        }
+        if (mlock( page, host_page_size ))
+        {
+            int error = errno;
+            munmap( page, host_page_size );
+            ERR( "failed to lock write-buffer barrier page: %s\n", strerror(error) );
+            status = STATUS_WORKING_SET_QUOTA;
+            goto done;
+        }
+        process_write_buffers_page = page;
+    }
+
+    if (mprotect( process_write_buffers_page, host_page_size, PROT_READ | PROT_WRITE ))
+    {
+        ERR( "failed to make write-buffer barrier page writable: %s\n", strerror(errno) );
+        status = STATUS_ACCESS_DENIED;
+        goto done;
+    }
+
+    /* Keep a dirty, resident PTE so reducing its permissions forces a synchronous
+     * TLB shootdown. The amd64 IPI handlers execute a locked instruction before
+     * acknowledging it, providing a memory barrier on the remote processors.
+     * Keeping the page readable also preserves its mlock across calls. */
+    InterlockedIncrement( (LONG *)process_write_buffers_page );
+    if (mprotect( process_write_buffers_page, host_page_size, PROT_READ ))
+    {
+        ERR( "failed to protect write-buffer barrier page: %s\n", strerror(errno) );
+        status = STATUS_ACCESS_DENIED;
+    }
+
+done:
+    server_leave_uninterrupted_section( &process_write_buffers_mutex, &sigset );
+    return status;
+}
+
+#else
 
 /**********************************************************************
  *           NtFlushProcessWriteBuffers  (NTDLL.@)
