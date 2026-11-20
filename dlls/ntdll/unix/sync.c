@@ -134,6 +134,22 @@ static inline int futex_wake_one( const LONG *addr )
     return syscall( __NR_futex, addr, FUTEX_WAKE_PRIVATE, 1, NULL, 0, 0 );
 }
 
+#elif defined(__OpenBSD__)
+
+#define USE_FUTEX
+
+#include <sys/futex.h>
+
+static inline int futex_wait( const LONG *addr, int val, struct timespec *timeout )
+{
+    return futex( (volatile uint32_t *)addr, FUTEX_WAIT_PRIVATE, val, timeout, NULL );
+}
+
+static inline int futex_wake_one( const LONG *addr )
+{
+    return futex( (volatile uint32_t *)addr, FUTEX_WAKE_PRIVATE, 1, NULL, NULL );
+}
+
 #elif defined(__APPLE__)
 
 #define USE_FUTEX
