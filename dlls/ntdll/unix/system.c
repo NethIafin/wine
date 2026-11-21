@@ -1798,6 +1798,12 @@ static void init_logical_proc_info(void)
     numa_info.HighestNodeNumber = numa_node_count - 1;
 }
 
+#ifdef __OpenBSD__
+
+static void get_random( void *buf, ULONG len ) { arc4random_buf(buf, len); }
+
+#else
+
 static void read_dev_urandom( void *buf, ULONG len )
 {
     int fd = open( "/dev/urandom", O_RDONLY );
@@ -1829,6 +1835,8 @@ void get_random( void *buf, ULONG len )
     read_dev_urandom( buf, len );
 #endif
 }
+
+#endif
 
 /******************************************************************
  *		init_cpu_info
