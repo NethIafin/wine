@@ -38,9 +38,12 @@
 #include "gs_openbsd.h"
 #include "wine/debug.h"
 
+WINE_DECLARE_DEBUG_CHANNEL(gsstats);
 WINE_DEFAULT_DEBUG_CHANNEL(seh);
 
 long teb_tls_offset;
+static BOOL gs_no_patch;
+#define IS_OPTION_TRUE(ch) ((ch) == 'y' || (ch) == 'Y' || (ch) == 't' || (ch) == 'T' || (ch) == '1')
 
 /***********************************************************************
  *           gs_init_process
@@ -48,6 +51,7 @@ long teb_tls_offset;
  */
 void gs_init_process(void)
 {
+    const char *str;
     long (*get_offset)(void) = dlsym( RTLD_DEFAULT, "__wine_teb_tls_offset" );
 
     if (!get_offset)
@@ -56,6 +60,12 @@ void gs_init_process(void)
         exit(1);
     }
     teb_tls_offset = get_offset();
+
+    if (teb_tls_offset != __WINE_OPENBSD_TEB_TLS_OFFSET)
+    {
+        ERR( "TEB TLS offset %lx has been moved! It has to be %llx\n", teb_tls_offset, __WINE_OPENBSD_TEB_TLS_OFFSET);
+        exit(1);
+    }
 
     if((int)teb_tls_offset != teb_tls_offset || (int)(teb_tls_offset + 8) != teb_tls_offset + 8)
     {
@@ -67,6 +77,11 @@ void gs_init_process(void)
     {
         ERR( "TEB Extended Slots offset %lx is out of range\n", teb_tls_offset);
         exit(1);
+    }
+
+    if((str = getenv( "WINEGSNOPATCH" )))
+    {
+        gs_no_patch = IS_OPTION_TRUE( str[0] );
     }
 }
 
@@ -179,6 +194,13 @@ static ULONG64 *get_gs_reg( ucontext_t *ucontext, unsigned int reg )
         return NULL;
     }
 }
+
+/* Log based logging of unpatched calls */
+#define MAX_LOG_BASE 100000000L
+static long gs_logging_current = 0;
+static long gs_logging_next_log = 10;
+static long gs_logging_current_log = 1;
+static long gs_logging_next_step = 1;
 
 /***********************************************************************
  *           get_gs_opcode_info
@@ -752,14 +774,14 @@ static int gs_in_place_offset( const struct gs_insn *insn, ULONG_PTR offset )
 }
 
 /* Static redirect for fail-all cases */
-#define GS_REDIRECTS 4096 /* want to keep low, but on a safer side. Without cases 1-3 we would have 10k+ of cases here */
+#define GS_REDIRECTS 65536 /* Enough to handle pure no patch approach */
 static struct gs_stub *gs_redirects[GS_REDIRECTS];
 static pthread_mutex_t gs_redirect_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static unsigned int gs_redirect_hash( const BYTE *site )
 {
     /* Fib hashing and then 4096 entires. Should be fine. We shouldn't have lots of cases here anyways */
-    return ((ULONG_PTR)site * 0x9e3779b97f4a7c15ull) >> (64 - 12);
+    return ((ULONG_PTR)site * 0x9e3779b97f4a7c15ull) >> (64 - 16);
 }
 
 static BOOL is_same_gs_site( const struct gs_stub *stub, const BYTE *site, const struct gs_insn *insn )
@@ -844,12 +866,12 @@ BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr )
     BYTE bytes[MAX_INSN_LEN], new_bytes[MAX_INSN_LEN];
     struct gs_stub stub, *slot, *used;
     struct gs_insn insn;
-    unsigned int i, avail, n;
+    unsigned int avail;
     ULONG_PTR offset;
-    BOOL patched;
     LONG64 disp;
     LONG_PTR rel;
-    int self_pos;
+    int self_pos, i;
+    char buf[MAX_INSN_LEN*3+1];
     BYTE *rip = (BYTE *)ucontext->sc_rip;
 
     /* since %gs pins value to 0, TEB access faults at 0+TEB offset */
@@ -868,7 +890,7 @@ BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr )
     if ((slot = find_gs_redirect( rip, &insn ))) goto redirect;
 
     /* 1. In place update %gs->%fs, and then instead of TEB offset (0x30) -> TLS slot */
-    if ((self_pos = gs_in_place_offset( &insn, offset )) != -1)
+    if (!gs_no_patch && (self_pos = gs_in_place_offset( &insn, offset )) != -1)
     {
         /* just change the command */
         memcpy( new_bytes, insn.bytes, insn.len ); /* first copy it as is */
@@ -879,6 +901,7 @@ BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr )
         switch (virtual_patch_code( rip, insn.bytes, new_bytes, insn.len ))
         {
             case PATCH_DONE:
+                TRACE_(gsstats)( "[GSR_T1] %%gs TEB offset replaced.\n" );
                 /* no stub created for this so we can treat DONE same as if someone else changed the instruction */
             case PATCH_CHANGED:
                 return TRUE;
@@ -895,8 +918,16 @@ BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr )
         return FALSE;
     }
 
+    if(TRACE_ON( gsstats ))
+    {
+        /* Trace approach from dlls/appwiz.cpl/addons.c */
+        for(i=0; i < MAX_INSN_LEN && i < insn.len; i++)
+            sprintf(buf + i * 3, "%02X ", insn.bytes[i]);
+        TRACE_(gsstats)( "[GSR_ST] at %p stub requested for %s\n", rip, buf );
+    }
+
     rel = slot->code - (rip + JMP_REL32_LEN); /* the allocator has to keep it within rel32 reach */
-    if (insn.len >= JMP_REL32_LEN && rel == (int)rel)
+    if (!gs_no_patch && insn.len >= JMP_REL32_LEN && rel == (int)rel)
     {
         new_bytes[0] = JMP_REL32;
         memcpy( new_bytes + 1, &rel, 4 );
@@ -904,6 +935,7 @@ BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr )
         switch (virtual_patch_code( rip, insn.bytes, new_bytes, insn.len ))
         {
             case PATCH_DONE:
+                TRACE_(gsstats)( "[GSR_T2] %%gs TEB offset patched to JMP.\n" );
                 return TRUE;
             case PATCH_CHANGED:
                 virtual_free_code_stub( slot ); /* someone already did it, free old slot */
@@ -917,13 +949,42 @@ BOOL gs_handle_fault( ucontext_t *ucontext, ULONG_PTR fault_addr )
     if (!(used = add_gs_redirect( slot, &insn )))
     {
         WARN( "%p: too many %%gs sites that can't be patched\n", rip);
+        TRACE_(gsstats)( "[GSR_EE] too many unpatchable sites. Quickjump table is overwhelmed.\n" );
         virtual_free_code_stub( slot );
         return FALSE;
     }
     if (used != slot) virtual_free_code_stub( slot );
+    else TRACE_(gsstats)( "[GSR_T3] %%gs TEB offset is stub only.\n" );
     slot = used;
 redirect:
     ucontext->sc_rip = (ULONG_PTR)slot->code;
+
+    if(TRACE_ON( gsstats ))
+    {
+        /* Non atomic increment - lost log is better than performance hit */
+        gs_logging_current++;
+
+        if(gs_logging_current < gs_logging_next_step)
+            return TRUE; /* we can return here too just to reduce number of else's*/
+
+        /* at some point even LONG will end */
+        if(gs_logging_current >= MAX_LOG_BASE)
+        {
+            TRACE_(gsstats)( "[GSR_WW] %%gs stub only jumps overflowed log count.\n" );
+            gs_logging_current = 0;
+            return TRUE;
+        }
+
+        TRACE_(gsstats)( "[GSR_WL] %%gs stub only jumps reached %ld.\n", gs_logging_current );
+        /* we want to space our logging on a log scale */
+        gs_logging_next_step += gs_logging_current_log;
+
+        if (gs_logging_next_step >= gs_logging_next_log)
+        {
+            gs_logging_current_log *= 10;
+            gs_logging_next_log *= 10;
+        }
+    }
     return TRUE;
 }
 

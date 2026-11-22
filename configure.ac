@@ -617,6 +617,20 @@ Please install mingw-w64, clang/llvm-dlltool/lld, or llvm-mingw.])
     dnl OpenBSD's clang adds return protection, and Wine's own modules will fail on startup if return protection is added
     WINE_TRY_PE_CFLAGS([-fno-ret-protector])
 
+    dnl OpenBSD requires a define hint for the include/ folder so that it knows to use %fs+offset instead of %gs+0x30
+    case $host_os in
+        openbsd*)
+            AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" -D__WINE_OPENBSD_GS_REPLACE"])
+        ;;
+    esac
+
+    dnl In OpenBSD we don't want to work with %gs, so we can force all TLS code to be emulated using -femulated-tls
+    case $host_os in
+        openbsd*)
+            WINE_TRY_PE_CFLAGS([-femulated-tls])
+        ;;
+    esac
+
     dnl clang had broken -fms-hotpatch support before version 18 (https://github.com/llvm/llvm-project/pull/77245)
     WINE_TRY_PE_CFLAGS([-fms-hotpatch -DMIN_CLANG_VERSION=18],
                        [AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" -fms-hotpatch"])

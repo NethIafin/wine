@@ -2771,6 +2771,9 @@ typedef struct _NT_TIB64
 } NT_TIB64;
 
 struct _TEB;
+#define __WINE_OPENBSD_TEB_TLS_OFFSET (-0x20LL)
+/* This is here to make generated assembly commands easier */
+#define __WINE_OPENBSD_TEB_TLS_OFFSET_STR "-0x20"
 
 #ifdef WINE_UNIX_LIB
 # ifdef __GNUC__
@@ -2802,6 +2805,13 @@ static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
 static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
 {
     return (struct _TEB *)__getReg(18);
+}
+#elif defined(__x86_64__) && defined(__WINE_OPENBSD_GS_REPLACE)
+static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
+{
+    struct _TEB *teb;
+    __asm__("movq %%fs:(%1),%0" : "=r" (teb) : "r" (__WINE_OPENBSD_TEB_TLS_OFFSET));
+    return teb;
 }
 #elif defined(__x86_64__) && defined(__GNUC__)
 static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
