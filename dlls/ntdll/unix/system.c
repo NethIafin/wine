@@ -1800,7 +1800,7 @@ static void init_logical_proc_info(void)
 
 #ifdef __OpenBSD__
 
-static void get_random( void *buf, ULONG len ) { arc4random_buf(buf, len); }
+void get_random( void *buf, ULONG len ) { arc4random_buf(buf, len); }
 
 #else
 
